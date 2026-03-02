@@ -1,0 +1,90 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard | CPCT</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="dashboard-page">
+    <div class="dashboard-shell" id="dashboardShell">
+        <aside class="sidebar" id="sidebar">
+            <button class="sidebar-toggle" id="sidebarToggle" aria-label="Toggle sidebar">&lt;</button>
+            <div class="sidebar-head">
+                <img src="{{ url_for('static', filename='imgs/aleco.png') }}" alt="ALECO logo">
+                <span>CPCT Panel</span>
+            </div>
+            <nav class="sidebar-nav">
+                <a href="#section-overview" class="nav-link">Overview</a>
+                <a href="#section-energy" class="nav-link">Energy Load</a>
+                <a href="#section-outages" class="nav-link">Outages</a>
+                <a href="#section-map" class="nav-link">Map View</a>
+            </nav>
+            <div class="sidebar-footer">
+                <a class="sidebar-logout" href="{{ url_for('logout') }}">Logout</a>
+            </div>
+        </aside>
+
+        <section class="main-content">
+            <header class="top-header">
+                <div>
+                    <h1>ALECO Dashboard</h1>
+                    <p>Welcome, {{ username }}</p>
+                </div>
+            </header>
+
+            <div class="cards-grid">
+                <article class="panel-card section-card" id="section-overview">
+                    <h2>Overview</h2>
+                    <p class="section-note">Use the left menu to jump between sections. The active section is highlighted automatically.</p>
+                </article>
+
+                <article class="panel-card section-card" id="section-energy">
+                    <h2>Daily Load Trend (MW)</h2>
+                    <canvas id="loadChart"></canvas>
+                </article>
+
+                <article class="panel-card section-card" id="section-outages">
+                    <h2>Outage Categories</h2>
+                    <canvas id="outageChart"></canvas>
+                </article>
+
+                <article class="panel-card map-card section-card" id="section-map">
+                    <div class="status-board">
+                        <div class="status-head">
+                            <h2 id="statusTitle">ELECTRIFICATION STATUS : Branch 1 Level of Energization</h2>
+                            <label for="branchSelect">Branch</label>
+                            <select id="branchSelect">
+                                <option value="1">Branch 1</option>
+                                <option value="2">Branch 2</option>
+                                <option value="3">Branch 3</option>
+                            </select>
+                        </div>
+                        <div class="status-body">
+                            <div class="map-frame">
+                                <div id="map"></div>
+                            </div>
+                            <aside class="level-legend" id="levelLegend"></aside>
+                        </div>
+                    </div>
+
+                    <div class="editor-panel">
+                        <h3>Edit Electrification Level</h3>
+                        <div id="levelEditor"></div>
+                    </div>
+
+                    <div class="location-details" id="locationDetails">
+                        <h3>Location Details</h3>
+                        <p>Click a location on the map to see details.</p>
+                    </div>
+                </article>
+            </div>
+        </section>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>

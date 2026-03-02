@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login | CPCT</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="login-page">
+    <div class="login-container">
+        <div class="login-box">
+            <img src="{{ url_for('static', filename='imgs/aleco.png') }}" class="logo" alt="ALECO logo">
+            <h2>Welcome Back</h2>
+            <h3>CPCT Login Portal</h3>
+
+            <form action="{{ url_for('login') }}" method="POST">
+                <div class="input-group">
+                    <label for="username">Username</label>
+                    <input id="username" type="text" name="username" required placeholder="Enter your username">
+                </div>
+
+                <div class="input-group">
+                    <label for="password">Password</label>
+                    <input id="password" type="password" name="password" required placeholder="Enter your password">
+                </div>
+
+                <button type="submit" class="login-btn">Login</button>
+            </form>
+
+            {% if error %}
+                <p class="error-text">{{ error }}</p>
+            {% endif %}
+        </div>
+    </div>
+</body>
+</html>
