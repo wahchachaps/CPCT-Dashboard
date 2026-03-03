@@ -1,124 +1,387 @@
-﻿document.addEventListener("DOMContentLoaded", function () {
+document.addEventListener("DOMContentLoaded", function () {
     const shell = document.getElementById("dashboardShell");
     const sidebarToggle = document.getElementById("sidebarToggle");
 
     if (shell && sidebarToggle) {
-        sidebarToggle.addEventListener("click", function () {
-            shell.classList.toggle("menu-collapsed");
+        function syncSidebarToggleState() {
             const isCollapsed = shell.classList.contains("menu-collapsed");
-            sidebarToggle.textContent = isCollapsed ? ">" : "<";
             sidebarToggle.setAttribute(
                 "aria-label",
                 isCollapsed ? "Expand sidebar" : "Collapse sidebar"
             );
+            sidebarToggle.setAttribute("title", isCollapsed ? "Expand sidebar" : "Collapse sidebar");
+            sidebarToggle.setAttribute("aria-expanded", String(!isCollapsed));
+        }
+
+        syncSidebarToggleState();
+        sidebarToggle.addEventListener("click", function () {
+            shell.classList.toggle("menu-collapsed");
+            syncSidebarToggleState();
         });
     }
 
-    const mainContent = document.querySelector(".main-content");
-    const cardsGrid = document.querySelector(".cards-grid");
     const navLinks = Array.from(document.querySelectorAll(".nav-link"));
     const sectionCards = Array.from(document.querySelectorAll(".section-card"));
     let dashboardMap = null;
+    let onMapPanelShown = null;
 
-    function setSectionFocusMode(sectionId) {
-        if (!cardsGrid) return;
-        cardsGrid.classList.toggle("map-focus", sectionId === "section-map");
-        if (sectionId === "section-map" && dashboardMap) {
-            setTimeout(function () {
-                dashboardMap.invalidateSize();
-            }, 120);
-        }
-    }
-
-    function setActiveNav(sectionId) {
+    function showSection(sectionId) {
+        sectionCards.forEach(function (card) {
+            card.classList.toggle("active-panel", card.id === sectionId);
+        });
         navLinks.forEach(function (link) {
             const isActive = link.getAttribute("href") === `#${sectionId}`;
             link.classList.toggle("active", isActive);
         });
-        setSectionFocusMode(sectionId);
+        if (sectionId === "section-map" && dashboardMap) {
+            setTimeout(function () {
+                dashboardMap.invalidateSize();
+                if (onMapPanelShown) {
+                    onMapPanelShown();
+                }
+            }, 120);
+        }
     }
 
     navLinks.forEach(function (link) {
         link.addEventListener("click", function (event) {
             const targetId = link.getAttribute("href").replace("#", "");
             const target = document.getElementById(targetId);
-            if (!target || !mainContent) return;
+            if (!target) return;
             event.preventDefault();
-            target.scrollIntoView({ behavior: "smooth", block: "start" });
-            setActiveNav(targetId);
+            showSection(targetId);
         });
     });
 
-    if (mainContent && sectionCards.length > 0) {
-        const useInternalScroll = getComputedStyle(mainContent).overflowY === "auto";
-        const observer = new IntersectionObserver(function (entries) {
-            entries.forEach(function (entry) {
-                if (entry.isIntersecting) {
-                    setActiveNav(entry.target.id);
+    if (sectionCards.length > 0) {
+        showSection(sectionCards[0].id);
+    }
+
+    const networkImage = document.querySelector(".network-image");
+    if (networkImage) {
+        const ZOOM_SCALE = 2;
+        const imageCard = networkImage.closest(".network-image-card");
+        let isZoomed = false;
+        let translateX = 0;
+        let translateY = 0;
+        let isDragging = false;
+        let dragStartX = 0;
+        let dragStartY = 0;
+        let dragOriginX = 0;
+        let dragOriginY = 0;
+
+        networkImage.draggable = false;
+        networkImage.addEventListener("dragstart", function (event) {
+            event.preventDefault();
+        });
+
+        function getMaxTranslate(scale) {
+            const baseRect = imageCard ? imageCard.getBoundingClientRect() : networkImage.getBoundingClientRect();
+            return {
+                x: Math.max(0, (baseRect.width * (scale - 1)) / 2),
+                y: Math.max(0, (baseRect.height * (scale - 1)) / 2)
+            };
+        }
+
+        function clampTranslate(x, y, scale) {
+            const limits = getMaxTranslate(scale);
+            return {
+                x: Math.min(limits.x, Math.max(-limits.x, x)),
+                y: Math.min(limits.y, Math.max(-limits.y, y))
+            };
+        }
+
+        function applyTransform(scale) {
+            networkImage.style.transform = `translate(${translateX}px, ${translateY}px) scale(${scale})`;
+        }
+
+        networkImage.addEventListener("dblclick", function (event) {
+            event.preventDefault();
+            const rect = networkImage.getBoundingClientRect();
+
+            if (!isZoomed) {
+                const offsetX = event.clientX - rect.left;
+                const offsetY = event.clientY - rect.top;
+                const centerX = rect.width / 2;
+                const centerY = rect.height / 2;
+
+                translateX = (1 - ZOOM_SCALE) * (offsetX - centerX);
+                translateY = (1 - ZOOM_SCALE) * (offsetY - centerY);
+                const clamped = clampTranslate(translateX, translateY, ZOOM_SCALE);
+                translateX = clamped.x;
+                translateY = clamped.y;
+
+                networkImage.style.transformOrigin = "50% 50%";
+                applyTransform(ZOOM_SCALE);
+                networkImage.classList.add("zoomed");
+                isZoomed = true;
+                return;
+            }
+
+            isDragging = false;
+            translateX = 0;
+            translateY = 0;
+            networkImage.style.transformOrigin = "50% 50%";
+            applyTransform(1);
+            networkImage.classList.remove("zoomed");
+            networkImage.classList.remove("dragging");
+            isZoomed = false;
+        });
+
+        networkImage.addEventListener("mousedown", function (event) {
+            if (!isZoomed) return;
+            event.preventDefault();
+            isDragging = true;
+            dragStartX = event.clientX;
+            dragStartY = event.clientY;
+            dragOriginX = translateX;
+            dragOriginY = translateY;
+            networkImage.classList.add("dragging");
+        });
+
+        window.addEventListener("mousemove", function (event) {
+            if (!isZoomed || !isDragging) return;
+            const deltaX = event.clientX - dragStartX;
+            const deltaY = event.clientY - dragStartY;
+            const clamped = clampTranslate(
+                dragOriginX + deltaX,
+                dragOriginY + deltaY,
+                ZOOM_SCALE
+            );
+            translateX = clamped.x;
+            translateY = clamped.y;
+            applyTransform(ZOOM_SCALE);
+        });
+
+        window.addEventListener("mouseup", function () {
+            if (!isDragging) return;
+            isDragging = false;
+            networkImage.classList.remove("dragging");
+        });
+    }
+
+    if (window.Chart) {
+        Chart.defaults.font.family = "Segoe UI, Tahoma, Geneva, Verdana, sans-serif";
+        Chart.defaults.color = "#334155";
+        Chart.defaults.animation = false;
+        Chart.defaults.animations = false;
+        if (Chart.defaults.transitions && Chart.defaults.transitions.active && Chart.defaults.transitions.active.animation) {
+            Chart.defaults.transitions.active.animation.duration = 0;
+        }
+
+        const hourlyCanvas = document.getElementById("hourlyLoadingChart");
+        if (hourlyCanvas) {
+            const hourlyLabels = Array.from({ length: 24 }, function (_, i) {
+                return `${i + 1}:00`;
+            });
+            const hourlyData = [82000, 80000, 77000, 73000, 70000, 68000, 73000, 75000, 76000, 89000, 98000, 101000, 100500, 99500, 101000, 102000, 100500, 98000, 106000, 107000, 102000, 97000, 93000, 90000];
+            const highlightIndex = 17;
+            new Chart(hourlyCanvas, {
+                type: "bar",
+                data: {
+                    labels: hourlyLabels,
+                    datasets: [{
+                        label: "Peak Load (kW)",
+                        data: hourlyData,
+                        backgroundColor: hourlyData.map(function (_, i) {
+                            return i === highlightIndex ? "#f4d03f" : "#1f77b4";
+                        }),
+                        borderRadius: 2
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: { ticks: { maxRotation: 45, minRotation: 45 } },
+                        y: {
+                            min: 0,
+                            max: 120000,
+                            title: { display: true, text: "Peak Load (kW)" }
+                        }
+                    }
                 }
             });
-        }, {
-            root: useInternalScroll ? mainContent : null,
-            rootMargin: "-30% 0px -55% 0px",
-            threshold: 0.01
-        });
+        }
 
-        sectionCards.forEach(function (section) {
-            observer.observe(section);
-        });
-        setActiveNav(sectionCards[0].id);
-    }
+        const capacityCanvas = document.getElementById("capacityDemandChart");
+        if (capacityCanvas) {
+            const years = Array.from({ length: 29 }, function (_, i) { return String(2007 + i); });
+            const capacity = [70, 70, 70, 70, 80, 80, 80, 75, 75, 80, 130, 130, 140, 145, 155, 165, 165, 165, 170, 230, 250, 250, 250, 250, 250, 250, 250, 250, 250];
+            const demand = [50, 52, 55, 57, 60, 62, 65, 70, 74, 78, 84, 90, 96, 95, 99, 103, 112, 122, 131, 139, 147, 155, 162, 169, 176, 183, 190, 197, 205];
+            new Chart(capacityCanvas, {
+                data: {
+                    labels: years,
+                    datasets: [
+                        { type: "bar", label: "S/S Capacity", data: capacity, backgroundColor: "#1f77b4", borderRadius: 2 },
+                        { type: "line", label: "Demand", data: demand, borderColor: "#0b1e55", backgroundColor: "#0b1e55", tension: 0.25, pointRadius: 3, pointBackgroundColor: "#ef4444" }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: { y: { min: 0, max: 300, title: { display: true, text: "Demand in MW" } } }
+                }
+            });
+        }
 
-    const loadCanvas = document.getElementById("loadChart");
-    if (loadCanvas && window.Chart) {
-        new Chart(loadCanvas, {
-            type: "line",
-            data: {
-                labels: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
-                datasets: [
-                    {
-                        label: "Load (MW)",
-                        data: [31, 35, 33, 38, 40, 36, 34],
-                        borderColor: "#0ea5e9",
-                        backgroundColor: "rgba(14, 165, 233, 0.15)",
-                        tension: 0.35,
-                        fill: true
+        const monthlyCanvas = document.getElementById("monthlyProfileChart");
+        if (monthlyCanvas) {
+            const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+            new Chart(monthlyCanvas, {
+                data: {
+                    labels: months,
+                    datasets: [
+                        { type: "bar", label: "2026", data: [112, 113, null, null, null, null, null, null, null, null, null, null], backgroundColor: "#1f77b4", borderRadius: 2 },
+                        { type: "line", label: "2024", data: [101, 97, 102, 114, 121, 123, 113, 120, 116, 120, 111, 112], borderColor: "#d7d400", backgroundColor: "#d7d400", tension: 0.25 },
+                        { type: "line", label: "2025", data: [106, 105, 110, 123, 124, 127, 122, 124, 119, 122, 120, 118], borderColor: "#ff0000", backgroundColor: "#ff0000", tension: 0.25 }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: { y: { min: 50, max: 150, title: { display: true, text: "Demand in MW" } } }
+                }
+            });
+        }
+
+        const lossCanvas = document.getElementById("systemsLossChart");
+        if (lossCanvas) {
+            const yearsLoss = Array.from({ length: 19 }, function (_, i) { return String(2007 + i); });
+            const lossPct = [31, 20, 18, 19, 18, 22, 29, 27, 26.5, 26, 24, 23, 23, 24, 25, 26, 26, 23, 22];
+            new Chart(lossCanvas, {
+                type: "bar",
+                data: {
+                    labels: yearsLoss,
+                    datasets: [{ label: "SL", data: lossPct, backgroundColor: "#1f77b4", borderRadius: 2 }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: { min: 0, max: 35, ticks: { callback: function (value) { return `${value}%`; } } }
                     }
-                ]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: { display: true }
+                }
+            });
+        }
+
+        const forecastCanvas = document.getElementById("forecastSupplyDemandChart");
+        if (forecastCanvas) {
+            const labels = [];
+            const baseRps = [];
+            const baseload = [];
+            const rec = [];
+            const erc = [];
+            const demand = [];
+            for (let y = 2026; y <= 2035; y++) {
+                for (let m = 1; m <= 12; m++) {
+                    labels.push(`${y}-${String(m).padStart(2, "0")}`);
+                    const progress = (y - 2026) * 12 + (m - 1);
+                    baseRps.push(30 + progress * 0.18);
+                    baseload.push(progress < 24 ? 0 : 14);
+                    rec.push(26 + progress * 0.13);
+                    erc.push(38 + progress * 0.08);
+                    demand.push(118 + progress * 0.7 + (Math.sin(progress / 2) * 9));
                 }
             }
-        });
-    }
-
-    const outageCanvas = document.getElementById("outageChart");
-    if (outageCanvas && window.Chart) {
-        new Chart(outageCanvas, {
-            type: "doughnut",
-            data: {
-                labels: ["Weather", "Maintenance", "Line Fault", "Unknown"],
-                datasets: [
-                    {
-                        data: [28, 22, 34, 16],
-                        backgroundColor: ["#0369a1", "#0ea5e9", "#38bdf8", "#7dd3fc"]
+            new Chart(forecastCanvas, {
+                data: {
+                    labels: labels,
+                    datasets: [
+                        { type: "bar", stack: "supply", label: "ERC Case No. 2025-121 RC", data: erc, backgroundColor: "#f08c2e" },
+                        { type: "bar", stack: "supply", label: "Baseload 2028", data: baseload, backgroundColor: "#f4b400" },
+                        { type: "bar", stack: "supply", label: "Intermediate RE for RPS", data: baseRps, backgroundColor: "#4c77c9" },
+                        { type: "bar", stack: "supply", label: "Retail Electricity Suppliers MW", data: rec, backgroundColor: "#8aa5d6" },
+                        { type: "line", label: "Coincident Peak MW", data: demand, borderColor: "#111", backgroundColor: "#111", tension: 0.25, yAxisID: "y", pointRadius: 0 }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            stacked: true,
+                            ticks: {
+                                autoSkip: true,
+                                maxTicksLimit: 12,
+                                callback: function (_, index) {
+                                    const label = labels[index];
+                                    return label && label.endsWith("-01") ? label.slice(0, 4) : "";
+                                }
+                            }
+                        },
+                        y: { stacked: true, min: 0, max: 260, title: { display: true, text: "MW" } }
                     }
-                ]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false
-            }
-        });
+                }
+            });
+        }
+
+        const generationMixCanvas = document.getElementById("generationMixChart");
+        if (generationMixCanvas) {
+            const generationMixPercentPlugin = {
+                id: "generationMixPercentPlugin",
+                afterDatasetsDraw: function (chart) {
+                    const dataset = chart.data.datasets[0];
+                    const meta = chart.getDatasetMeta(0);
+                    const ctx = chart.ctx;
+                    ctx.save();
+                    ctx.font = "700 16px Segoe UI";
+                    ctx.fillStyle = "#ffffff";
+                    ctx.textAlign = "center";
+                    ctx.textBaseline = "middle";
+                    meta.data.forEach(function (arc, index) {
+                        const p = arc.getProps(
+                            ["x", "y", "startAngle", "endAngle", "innerRadius", "outerRadius"],
+                            true
+                        );
+                        const angle = (p.startAngle + p.endAngle) / 2;
+                        const radius = (p.innerRadius + p.outerRadius) / 2;
+                        const x = p.x + Math.cos(angle) * radius;
+                        const y = p.y + Math.sin(angle) * radius;
+                        ctx.fillText(`${dataset.data[index]}%`, x, y);
+                    });
+                    ctx.restore();
+                }
+            };
+            new Chart(generationMixCanvas, {
+                type: "pie",
+                plugins: [generationMixPercentPlugin],
+                data: {
+                    labels: ["Therma Luzon, Inc.", "Masinloc Power Co. Ltd.", "WESM"],
+                    datasets: [{
+                        data: [37, 37, 26],
+                        backgroundColor: ["#4a74c1", "#ec8630", "#a3a3a3"],
+                        borderColor: "#ffffff",
+                        borderWidth: 3
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            display: true,
+                            position: "bottom",
+                            labels: {
+                                boxWidth: 14,
+                                boxHeight: 14,
+                                padding: 12,
+                                color: "#334155",
+                                font: {
+                                    size: 12,
+                                    weight: "600"
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
     }
 
     const mapElement = document.getElementById("map");
     const branchSelect = document.getElementById("branchSelect");
-    const statusTitle = document.getElementById("statusTitle");
     const levelLegend = document.getElementById("levelLegend");
     const levelEditor = document.getElementById("levelEditor");
     const locationDetails = document.getElementById("locationDetails");
@@ -161,12 +424,20 @@
 
         const map = L.map("map", {
             minZoom: 8,
-            maxZoom: 13
+            maxZoom: 13,
+            zoomControl: false,
+            scrollWheelZoom: false,
+            doubleClickZoom: false,
+            boxZoom: false,
+            keyboard: false,
+            dragging: false,
+            touchZoom: false
         });
         dashboardMap = map;
 
         let geoLayer = null;
         let albayGeoJsonData = null;
+        let displayGeoJson = null;
         let currentBranch = "1";
         let currentBounds = null;
         const albayGeoJsonUrl = "/static/data/albay_municities.json";
@@ -182,6 +453,22 @@
         function getFeatureName(feature) {
             const p = feature && feature.properties ? feature.properties : {};
             return p.__name_override || p.adm3_en || p.ADM3_EN || p.name || "";
+        }
+
+        function getBranchLocations(branchKey) {
+            if (branchKey !== "all") {
+                return branchData[branchKey] || [];
+            }
+            const merged = new Map();
+            ["1", "2", "3"].forEach(function (key) {
+                (branchData[key] || []).forEach(function (loc) {
+                    const id = normalizeName(loc.name);
+                    if (!merged.has(id)) {
+                        merged.set(id, loc);
+                    }
+                });
+            });
+            return Array.from(merged.values());
         }
 
         function polygonLonLatCenter(polygonCoords) {
@@ -207,12 +494,17 @@
                     geom.coordinates.forEach(function (polyCoords) {
                         const center = polygonLonLatCenter(polyCoords);
                         let mappedName = rawName;
+                        let suppressLabel = false;
                         if (center && center[0] > 123.75) {
                             mappedName = "Bacacay";
+                            suppressLabel = true;
                         }
                         out.features.push({
                             type: "Feature",
-                            properties: Object.assign({}, feature.properties, { __name_override: mappedName }),
+                            properties: Object.assign({}, feature.properties, {
+                                __name_override: mappedName,
+                                __suppress_label: suppressLabel
+                            }),
                             geometry: { type: "Polygon", coordinates: polyCoords }
                         });
                     });
@@ -225,7 +517,7 @@
         }
 
         function renderLegend(branchKey) {
-            const locations = branchData[branchKey];
+            const locations = getBranchLocations(branchKey);
             const grouped = {};
             LEVEL_ORDER.forEach(function (level) {
                 grouped[level] = locations.filter(function (loc) { return loc.level === level; });
@@ -257,7 +549,7 @@
         }
 
         function renderEditor(branchKey) {
-            const locations = branchData[branchKey];
+            const locations = getBranchLocations(branchKey);
             levelEditor.innerHTML = "";
 
             locations.forEach(function (loc) {
@@ -290,7 +582,7 @@
 
         function renderMap(branchKey, fitToBranch) {
             if (!albayGeoJsonData) return;
-            const locations = branchData[branchKey];
+            const locations = getBranchLocations(branchKey);
             const branchByName = {};
             let selectedName = null;
             locations.forEach(function (loc) {
@@ -301,7 +593,7 @@
                 map.removeLayer(geoLayer);
             }
 
-            const renderGeoJson = buildDisplayGeoJson(albayGeoJsonData);
+            const renderGeoJson = displayGeoJson || buildDisplayGeoJson(albayGeoJsonData);
             function styleForFeature(feature) {
                 const rawName = getFeatureName(feature);
                 const normalized = normalizeName(rawName);
@@ -326,11 +618,17 @@
                     const normalized = normalizeName(rawName);
                     const match = branchByName[normalized];
                     const displayName = rawName.replace("City of ", "") || "Unknown";
+                    const featureProps = feature && feature.properties ? feature.properties : {};
+                    const suppressLabel = !!featureProps.__suppress_label;
 
-                    layer.bindTooltip(displayName, {
-                        sticky: true,
-                        className: "aleco-label"
-                    });
+                    if (!suppressLabel) {
+                        layer.bindTooltip(displayName, {
+                            permanent: true,
+                            direction: "center",
+                            opacity: 0.9,
+                            className: "aleco-label"
+                        });
+                    }
                     layer.bindPopup(
                         `<b>${match.name}</b><br>${match.type}, Albay<br>` +
                         `Electrification: ${LEVELS[match.level].label}`
@@ -349,7 +647,7 @@
                             locationDetails.innerHTML =
                                 `<h3>${match.name}</h3>` +
                                 `<p><strong>Type:</strong> ${match.type}</p>` +
-                                `<p><strong>Branch:</strong> ${branchKey}</p>` +
+                                `<p><strong>Branch:</strong> Branch ${branchKey}</p>` +
                                 `<p><strong>Electrification:</strong> ${LEVELS[match.level].label}</p>`;
                         }
                     });
@@ -361,28 +659,24 @@
                 return !!branchByName[normalizeName(rawName)];
             });
 
-            const points = [];
-            branchPolygons.forEach(function (layer) {
-                const b = layer.getBounds();
-                points.push([b.getSouthWest().lat, b.getSouthWest().lng]);
-                points.push([b.getNorthEast().lat, b.getNorthEast().lng]);
+            if (branchPolygons.length === 0) return;
+            currentBounds = L.featureGroup(branchPolygons).getBounds().pad(0.04);
+            map.setMinZoom(6);
+            map.setMaxZoom(13);
+            map.fitBounds(currentBounds, {
+                animate: false,
+                paddingTopLeft: [20, 20],
+                paddingBottomRight: [20, 20]
             });
-
-            if (points.length === 0) {
-                currentBounds = geoLayer.getBounds().pad(0.08);
-            } else {
-                currentBounds = L.latLngBounds(points).pad(0.12);
-            }
+            const lockedZoom = map.getZoom();
+            map.setMinZoom(lockedZoom);
+            map.setMaxZoom(lockedZoom);
             map.setMaxBounds(currentBounds);
             map.options.maxBoundsViscosity = 1.0;
-            if (fitToBranch) {
-                map.fitBounds(currentBounds);
-            }
         }
 
         function renderBranch(branchKey) {
             currentBranch = branchKey;
-            statusTitle.textContent = `ELECTRIFICATION STATUS : Branch ${branchKey} Level of Energization`;
             renderLegend(branchKey);
             renderEditor(branchKey);
             renderMap(branchKey, true);
@@ -415,6 +709,10 @@
             })
             .then(function (data) {
                 albayGeoJsonData = data;
+                displayGeoJson = buildDisplayGeoJson(data);
+                onMapPanelShown = function () {
+                    renderBranch(currentBranch);
+                };
                 renderBranch(currentBranch);
             })
             .catch(function () {
@@ -429,3 +727,4 @@
         }, 120);
     }
 });
+
