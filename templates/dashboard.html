@@ -18,25 +18,47 @@
                         <span class="brand-subtitle">Operations View</span>
                     </div>
                 </div>
-                <button class="sidebar-toggle" id="sidebarToggle" aria-label="Collapse sidebar" title="Collapse sidebar" aria-expanded="true">
-                    <svg class="sidebar-toggle-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                        <path d="M14.5 6.5L9 12l5.5 5.5" />
-                    </svg>
-                </button>
             </div>
-            <div class="sidebar-section-title">Navigation</div>
             <nav class="sidebar-nav">
                 <a href="#section-overview" class="nav-link">
-                    <span class="nav-icon">OV</span><span class="nav-text">Overview</span>
+                    <span class="nav-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" focusable="false">
+                            <path d="M3 10.5L12 3l9 7.5" />
+                            <path d="M5.25 9.5V20h13.5V9.5" />
+                        </svg>
+                    </span>
+                    <span class="nav-text">Overview</span>
                 </a>
                 <a href="#section-energy" class="nav-link">
-                    <span class="nav-icon">EL</span><span class="nav-text">Energy Load</span>
+                    <span class="nav-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" focusable="false">
+                            <path d="M4.5 19.5h15" />
+                            <path d="M7.5 16V11.5" />
+                            <path d="M12 16V8" />
+                            <path d="M16.5 16V5" />
+                        </svg>
+                    </span>
+                    <span class="nav-text">Energy Load</span>
                 </a>
                 <a href="#section-outages" class="nav-link">
-                    <span class="nav-icon">PL</span><span class="nav-text">Planning</span>
+                    <span class="nav-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" focusable="false">
+                            <path d="M8 3v3" />
+                            <path d="M16 3v3" />
+                            <rect x="4" y="6" width="16" height="14" rx="2" ry="2" />
+                            <path d="M4 10.5h16" />
+                        </svg>
+                    </span>
+                    <span class="nav-text">Planning</span>
                 </a>
                 <a href="#section-map" class="nav-link">
-                    <span class="nav-icon">MP</span><span class="nav-text">Map View</span>
+                    <span class="nav-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" focusable="false">
+                            <path d="M12 21s6-5.25 6-11a6 6 0 10-12 0c0 5.75 6 11 6 11z" />
+                            <circle cx="12" cy="10" r="2.25" />
+                        </svg>
+                    </span>
+                    <span class="nav-text">Map View</span>
                 </a>
             </nav>
             <div class="sidebar-footer">

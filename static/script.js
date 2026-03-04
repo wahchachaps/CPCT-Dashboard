@@ -1,29 +1,79 @@
 document.addEventListener("DOMContentLoaded", function () {
-    const shell = document.getElementById("dashboardShell");
-    const sidebarToggle = document.getElementById("sidebarToggle");
+    const navLinks = Array.from(document.querySelectorAll(".nav-link"));
+    const sectionCards = Array.from(document.querySelectorAll(".section-card"));
+    const dashboardCharts = [];
+    let dashboardMap = null;
+    let onMapPanelShown = null;
 
-    if (shell && sidebarToggle) {
-        function syncSidebarToggleState() {
-            const isCollapsed = shell.classList.contains("menu-collapsed");
-            sidebarToggle.setAttribute(
-                "aria-label",
-                isCollapsed ? "Expand sidebar" : "Collapse sidebar"
-            );
-            sidebarToggle.setAttribute("title", isCollapsed ? "Expand sidebar" : "Collapse sidebar");
-            sidebarToggle.setAttribute("aria-expanded", String(!isCollapsed));
-        }
+    function registerChart(chart) {
+        dashboardCharts.push(chart);
+        return chart;
+    }
 
-        syncSidebarToggleState();
-        sidebarToggle.addEventListener("click", function () {
-            shell.classList.toggle("menu-collapsed");
-            syncSidebarToggleState();
+    function resizeDashboardCharts() {
+        dashboardCharts.forEach(function (chart) {
+            chart.resize();
         });
     }
 
-    const navLinks = Array.from(document.querySelectorAll(".nav-link"));
-    const sectionCards = Array.from(document.querySelectorAll(".section-card"));
-    let dashboardMap = null;
-    let onMapPanelShown = null;
+    function collectNumericValues(value, bucket) {
+        if (Array.isArray(value)) {
+            value.forEach(function (item) {
+                collectNumericValues(item, bucket);
+            });
+            return;
+        }
+        if (typeof value === "number" && Number.isFinite(value)) {
+            bucket.push(value);
+        }
+    }
+
+    function getScaleBounds(values, options) {
+        const settings = Object.assign({
+            beginAtZero: false,
+            minFloor: null,
+            maxCeiling: null,
+            paddingRatio: 0.1,
+            minPadding: 1
+        }, options || {});
+        const numbers = [];
+        collectNumericValues(values, numbers);
+        if (numbers.length === 0) {
+            return {};
+        }
+
+        let min = Math.min.apply(null, numbers);
+        let max = Math.max.apply(null, numbers);
+        const spread = max - min;
+        const padding = Math.max(spread * settings.paddingRatio, settings.minPadding);
+
+        if (spread === 0) {
+            min -= padding;
+            max += padding;
+        } else {
+            min -= padding;
+            max += padding;
+        }
+
+        if (settings.beginAtZero && min > 0) {
+            min = 0;
+        }
+        if (settings.minFloor !== null) {
+            min = Math.max(settings.minFloor, min);
+        }
+        if (settings.maxCeiling !== null) {
+            max = Math.min(settings.maxCeiling, max);
+        }
+        if (max <= min) {
+            max = min + settings.minPadding;
+        }
+
+        return { suggestedMin: min, suggestedMax: max };
+    }
+
+    function numberTick(value) {
+        return Number(value).toLocaleString();
+    }
 
     function showSection(sectionId) {
         sectionCards.forEach(function (card) {
@@ -33,6 +83,9 @@ document.addEventListener("DOMContentLoaded", function () {
             const isActive = link.getAttribute("href") === `#${sectionId}`;
             link.classList.toggle("active", isActive);
         });
+        setTimeout(function () {
+            resizeDashboardCharts();
+        }, 90);
         if (sectionId === "section-map" && dashboardMap) {
             setTimeout(function () {
                 dashboardMap.invalidateSize();
@@ -56,6 +109,10 @@ document.addEventListener("DOMContentLoaded", function () {
     if (sectionCards.length > 0) {
         showSection(sectionCards[0].id);
     }
+
+    window.addEventListener("resize", function () {
+        resizeDashboardCharts();
+    });
 
     const networkImage = document.querySelector(".network-image");
     if (networkImage) {
@@ -176,7 +233,12 @@ document.addEventListener("DOMContentLoaded", function () {
             });
             const hourlyData = [82000, 80000, 77000, 73000, 70000, 68000, 73000, 75000, 76000, 89000, 98000, 101000, 100500, 99500, 101000, 102000, 100500, 98000, 106000, 107000, 102000, 97000, 93000, 90000];
             const highlightIndex = 17;
-            new Chart(hourlyCanvas, {
+            const hourlyScale = getScaleBounds(hourlyData, {
+                beginAtZero: true,
+                minPadding: 1000,
+                paddingRatio: 0.12
+            });
+            registerChart(new Chart(hourlyCanvas, {
                 type: "bar",
                 data: {
                     labels: hourlyLabels,
@@ -192,17 +254,25 @@ document.addEventListener("DOMContentLoaded", function () {
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
+                    layout: { padding: { top: 10, right: 12, bottom: 4, left: 6 } },
                     plugins: { legend: { display: false } },
                     scales: {
-                        x: { ticks: { maxRotation: 45, minRotation: 45 } },
-                        y: {
-                            min: 0,
-                            max: 120000,
-                            title: { display: true, text: "Peak Load (kW)" }
-                        }
+                        x: {
+                            ticks: {
+                                autoSkip: true,
+                                maxTicksLimit: 12,
+                                maxRotation: 45,
+                                minRotation: 0,
+                                padding: 6
+                            }
+                        },
+                        y: Object.assign({}, hourlyScale, {
+                            title: { display: true, text: "Peak Load (kW)" },
+                            ticks: { callback: numberTick }
+                        })
                     }
                 }
-            });
+            }));
         }
 
         const capacityCanvas = document.getElementById("capacityDemandChart");
@@ -210,47 +280,148 @@ document.addEventListener("DOMContentLoaded", function () {
             const years = Array.from({ length: 29 }, function (_, i) { return String(2007 + i); });
             const capacity = [70, 70, 70, 70, 80, 80, 80, 75, 75, 80, 130, 130, 140, 145, 155, 165, 165, 165, 170, 230, 250, 250, 250, 250, 250, 250, 250, 250, 250];
             const demand = [50, 52, 55, 57, 60, 62, 65, 70, 74, 78, 84, 90, 96, 95, 99, 103, 112, 122, 131, 139, 147, 155, 162, 169, 176, 183, 190, 197, 205];
-            new Chart(capacityCanvas, {
+            const capacityScale = getScaleBounds([capacity, demand], {
+                beginAtZero: true,
+                minPadding: 5
+            });
+            registerChart(new Chart(capacityCanvas, {
                 data: {
                     labels: years,
                     datasets: [
-                        { type: "bar", label: "S/S Capacity", data: capacity, backgroundColor: "#1f77b4", borderRadius: 2 },
-                        { type: "line", label: "Demand", data: demand, borderColor: "#0b1e55", backgroundColor: "#0b1e55", tension: 0.25, pointRadius: 3, pointBackgroundColor: "#ef4444" }
+                        {
+                            type: "bar",
+                            order: 3,
+                            label: "S/S Capacity",
+                            data: capacity,
+                            backgroundColor: "#1f77b4",
+                            borderRadius: 2
+                        },
+                        {
+                            type: "line",
+                            order: 1,
+                            label: "Demand",
+                            data: demand,
+                            borderColor: "#0b1e55",
+                            backgroundColor: "#0b1e55",
+                            borderWidth: 3,
+                            tension: 0.25,
+                            pointRadius: 4,
+                            pointHoverRadius: 5,
+                            pointBackgroundColor: "#ef4444",
+                            pointBorderColor: "#ffffff",
+                            pointBorderWidth: 1.5,
+                            clip: false
+                        }
                     ]
                 },
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
-                    scales: { y: { min: 0, max: 300, title: { display: true, text: "Demand in MW" } } }
+                    layout: { padding: { top: 10, right: 12, bottom: 4, left: 6 } },
+                    scales: {
+                        x: {
+                            ticks: {
+                                autoSkip: true,
+                                maxTicksLimit: 14,
+                                maxRotation: 0,
+                                padding: 6
+                            }
+                        },
+                        y: Object.assign({}, capacityScale, {
+                            title: { display: true, text: "Demand in MW" },
+                            ticks: { callback: numberTick }
+                        })
+                    }
                 }
-            });
+            }));
         }
 
         const monthlyCanvas = document.getElementById("monthlyProfileChart");
         if (monthlyCanvas) {
             const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-            new Chart(monthlyCanvas, {
+            const monthly2026 = [112, 113, null, null, null, null, null, null, null, null, null, null];
+            const monthly2024 = [101, 97, 102, 114, 121, 123, 113, 120, 116, 120, 111, 112];
+            const monthly2025 = [106, 105, 110, 123, 124, 127, 122, 124, 119, 122, 120, 118];
+            const monthlyScale = getScaleBounds([monthly2026, monthly2024, monthly2025], {
+                minPadding: 2
+            });
+            registerChart(new Chart(monthlyCanvas, {
                 data: {
                     labels: months,
                     datasets: [
-                        { type: "bar", label: "2026", data: [112, 113, null, null, null, null, null, null, null, null, null, null], backgroundColor: "#1f77b4", borderRadius: 2 },
-                        { type: "line", label: "2024", data: [101, 97, 102, 114, 121, 123, 113, 120, 116, 120, 111, 112], borderColor: "#d7d400", backgroundColor: "#d7d400", tension: 0.25 },
-                        { type: "line", label: "2025", data: [106, 105, 110, 123, 124, 127, 122, 124, 119, 122, 120, 118], borderColor: "#ff0000", backgroundColor: "#ff0000", tension: 0.25 }
+                        {
+                            type: "bar",
+                            order: 3,
+                            label: "2026",
+                            data: monthly2026,
+                            backgroundColor: "#1f77b4",
+                            borderRadius: 2
+                        },
+                        {
+                            type: "line",
+                            order: 1,
+                            label: "2024",
+                            data: monthly2024,
+                            borderColor: "#d7d400",
+                            backgroundColor: "#d7d400",
+                            borderWidth: 3,
+                            tension: 0.25,
+                            pointRadius: 4,
+                            pointHoverRadius: 5,
+                            pointBackgroundColor: "#d7d400",
+                            pointBorderColor: "#ffffff",
+                            pointBorderWidth: 1.5,
+                            clip: false
+                        },
+                        {
+                            type: "line",
+                            order: 0,
+                            label: "2025",
+                            data: monthly2025,
+                            borderColor: "#ff0000",
+                            backgroundColor: "#ff0000",
+                            borderWidth: 3,
+                            tension: 0.25,
+                            pointRadius: 4,
+                            pointHoverRadius: 5,
+                            pointBackgroundColor: "#ff0000",
+                            pointBorderColor: "#ffffff",
+                            pointBorderWidth: 1.5,
+                            clip: false
+                        }
                     ]
                 },
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
-                    scales: { y: { min: 50, max: 150, title: { display: true, text: "Demand in MW" } } }
+                    layout: { padding: { top: 10, right: 12, bottom: 4, left: 6 } },
+                    scales: {
+                        x: {
+                            ticks: {
+                                autoSkip: true,
+                                maxTicksLimit: 12,
+                                padding: 6
+                            }
+                        },
+                        y: Object.assign({}, monthlyScale, {
+                            title: { display: true, text: "Demand in MW" },
+                            ticks: { callback: numberTick }
+                        })
+                    }
                 }
-            });
+            }));
         }
 
         const lossCanvas = document.getElementById("systemsLossChart");
         if (lossCanvas) {
             const yearsLoss = Array.from({ length: 19 }, function (_, i) { return String(2007 + i); });
             const lossPct = [31, 20, 18, 19, 18, 22, 29, 27, 26.5, 26, 24, 23, 23, 24, 25, 26, 26, 23, 22];
-            new Chart(lossCanvas, {
+            const lossScale = getScaleBounds(lossPct, {
+                beginAtZero: true,
+                minPadding: 0.5,
+                paddingRatio: 0.08
+            });
+            registerChart(new Chart(lossCanvas, {
                 type: "bar",
                 data: {
                     labels: yearsLoss,
@@ -259,11 +430,23 @@ document.addEventListener("DOMContentLoaded", function () {
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
+                    layout: { padding: { top: 10, right: 12, bottom: 4, left: 6 } },
                     scales: {
-                        y: { min: 0, max: 35, ticks: { callback: function (value) { return `${value}%`; } } }
+                        x: {
+                            ticks: {
+                                autoSkip: true,
+                                maxTicksLimit: 12,
+                                padding: 6
+                            }
+                        },
+                        y: Object.assign({}, lossScale, {
+                            ticks: {
+                                callback: function (value) { return `${value}%`; }
+                            }
+                        })
                     }
                 }
-            });
+            }));
         }
 
         const forecastCanvas = document.getElementById("forecastSupplyDemandChart");
@@ -285,20 +468,41 @@ document.addEventListener("DOMContentLoaded", function () {
                     demand.push(118 + progress * 0.7 + (Math.sin(progress / 2) * 9));
                 }
             }
-            new Chart(forecastCanvas, {
+            const supplyTotals = labels.map(function (_, index) {
+                return (erc[index] || 0) + (baseload[index] || 0) + (baseRps[index] || 0) + (rec[index] || 0);
+            });
+            const forecastScale = getScaleBounds([supplyTotals, demand], {
+                beginAtZero: true,
+                minPadding: 5,
+                paddingRatio: 0.08
+            });
+            registerChart(new Chart(forecastCanvas, {
                 data: {
                     labels: labels,
                     datasets: [
-                        { type: "bar", stack: "supply", label: "ERC Case No. 2025-121 RC", data: erc, backgroundColor: "#f08c2e" },
-                        { type: "bar", stack: "supply", label: "Baseload 2028", data: baseload, backgroundColor: "#f4b400" },
-                        { type: "bar", stack: "supply", label: "Intermediate RE for RPS", data: baseRps, backgroundColor: "#4c77c9" },
-                        { type: "bar", stack: "supply", label: "Retail Electricity Suppliers MW", data: rec, backgroundColor: "#8aa5d6" },
-                        { type: "line", label: "Coincident Peak MW", data: demand, borderColor: "#111", backgroundColor: "#111", tension: 0.25, yAxisID: "y", pointRadius: 0 }
+                        { type: "bar", order: 3, stack: "supply", label: "ERC Case No. 2025-121 RC", data: erc, backgroundColor: "#f08c2e" },
+                        { type: "bar", order: 3, stack: "supply", label: "Baseload 2028", data: baseload, backgroundColor: "#f4b400" },
+                        { type: "bar", order: 3, stack: "supply", label: "Intermediate RE for RPS", data: baseRps, backgroundColor: "#4c77c9" },
+                        { type: "bar", order: 3, stack: "supply", label: "Retail Electricity Suppliers MW", data: rec, backgroundColor: "#8aa5d6" },
+                        {
+                            type: "line",
+                            order: 1,
+                            label: "Coincident Peak MW",
+                            data: demand,
+                            borderColor: "#111",
+                            backgroundColor: "#111",
+                            borderWidth: 2.8,
+                            tension: 0.25,
+                            yAxisID: "y",
+                            pointRadius: 0,
+                            clip: false
+                        }
                     ]
                 },
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
+                    layout: { padding: { top: 10, right: 12, bottom: 4, left: 6 } },
                     scales: {
                         x: {
                             stacked: true,
@@ -311,10 +515,14 @@ document.addEventListener("DOMContentLoaded", function () {
                                 }
                             }
                         },
-                        y: { stacked: true, min: 0, max: 260, title: { display: true, text: "MW" } }
+                        y: Object.assign({}, forecastScale, {
+                            stacked: true,
+                            title: { display: true, text: "MW" },
+                            ticks: { callback: numberTick }
+                        })
                     }
                 }
-            });
+            }));
         }
 
         const generationMixCanvas = document.getElementById("generationMixChart");
@@ -344,7 +552,7 @@ document.addEventListener("DOMContentLoaded", function () {
                     ctx.restore();
                 }
             };
-            new Chart(generationMixCanvas, {
+            registerChart(new Chart(generationMixCanvas, {
                 type: "pie",
                 plugins: [generationMixPercentPlugin],
                 data: {
@@ -359,6 +567,7 @@ document.addEventListener("DOMContentLoaded", function () {
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
+                    layout: { padding: { top: 8, right: 8, bottom: 8, left: 8 } },
                     plugins: {
                         legend: {
                             display: true,
@@ -376,7 +585,7 @@ document.addEventListener("DOMContentLoaded", function () {
                         }
                     }
                 }
-            });
+            }));
         }
     }
 
@@ -533,12 +742,14 @@ document.addEventListener("DOMContentLoaded", function () {
                 const title = document.createElement("div");
                 title.className = `legend-title ${LEVELS[level].className}`;
                 title.textContent = LEVELS[level].label;
+                title.style.color = LEVELS[level].markerColor;
 
                 const list = document.createElement("ul");
                 list.className = "legend-items";
                 grouped[level].forEach(function (loc) {
                     const item = document.createElement("li");
                     item.textContent = loc.name;
+                    item.style.color = LEVELS[level].markerColor;
                     list.appendChild(item);
                 });
 
