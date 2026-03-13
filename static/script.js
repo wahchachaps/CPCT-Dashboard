@@ -1,4 +1,4 @@
-document.addEventListener("DOMContentLoaded", function () {
+﻿document.addEventListener("DOMContentLoaded", function () {
     const navLinks = Array.from(document.querySelectorAll(".nav-link"));
     const sectionCards = Array.from(document.querySelectorAll(".section-card"));
     const dashboardCharts = [];
@@ -594,6 +594,10 @@ document.addEventListener("DOMContentLoaded", function () {
     const levelLegend = document.getElementById("levelLegend");
     const levelEditor = document.getElementById("levelEditor");
     const locationDetails = document.getElementById("locationDetails");
+    const branchImageMap = document.getElementById("branchImageMap");
+    const branchBaseImage = document.getElementById("branchBaseImage");
+    const branchMaskCanvas = document.getElementById("branchMaskCanvas");
+    const branchHoverLabel = document.getElementById("branchHoverLabel");
 
     if (mapElement && window.L) {
         const LEVELS = {
@@ -631,6 +635,25 @@ document.addEventListener("DOMContentLoaded", function () {
             ]
         };
 
+        const branch3MaskFiles = {
+            polangui: "/static/imgs/Polangui.png",
+            ligao: "/static/imgs/Ligao.png",
+            guinobatan: "/static/imgs/Guinobatan.png",
+            libon: "/static/imgs/Libon.png",
+            oas: "/static/imgs/Oas.png",
+            pioduran: "/static/imgs/Pio%20Duran.png",
+            jovellar: "/static/imgs/Jovellar.png"
+        };
+        const BRANCH3_MASK_ALPHA_MIN = 18;
+        const BRANCH3_MASK_WHITE_SUM = 360;
+        const BRANCH3_BASE_DARK_SUM = 600;
+        const BRANCH3_ALIGN_TWEAK = {
+            scaleX: 1,
+            scaleY: 1,
+            offsetX: 0,
+            offsetY: 0
+        };
+
         const map = L.map("map", {
             minZoom: 8,
             maxZoom: 13,
@@ -650,6 +673,20 @@ document.addEventListener("DOMContentLoaded", function () {
         let currentBranch = "1";
         let currentBounds = null;
         const albayGeoJsonUrl = "/static/data/albay_municities.json";
+        let branch3AssetsReady = false;
+        let branch3AssetsFailed = false;
+        let branch3LoadPromise = null;
+        let branch3EventsBound = false;
+        let branch3HitMap = null;
+        let branch3MapWidth = 0;
+        let branch3MapHeight = 0;
+        let branch3HoverName = null;
+        let branch3SelectedName = null;
+        let branch3PaintCanvas = null;
+        let branch3PaintCtx = null;
+        let branch3MaskTransform = null;
+        const branch3MaskEntries = [];
+        const branch3EntryByName = {};
 
         function normalizeName(name) {
             return String(name || "")
@@ -725,6 +762,475 @@ document.addEventListener("DOMContentLoaded", function () {
             return out;
         }
 
+        function setLocationDetailsContent(match, branchKey) {
+            if (!locationDetails || !match) return;
+            locationDetails.innerHTML =
+                `<h3>${match.name}</h3>` +
+                `<p><strong>Type:</strong> ${match.type}</p>` +
+                `<p><strong>Branch:</strong> Branch ${branchKey}</p>` +
+                `<p><strong>Electrification:</strong> ${LEVELS[match.level].label}</p>`;
+        }
+
+        function setMapMode(useBranchImage) {
+            if (mapElement) {
+                mapElement.classList.toggle("hidden", !!useBranchImage);
+            }
+            if (branchImageMap) {
+                branchImageMap.classList.toggle("hidden", !useBranchImage);
+            }
+            if (!useBranchImage && branchHoverLabel) {
+                branchHoverLabel.classList.remove("visible");
+            }
+        }
+
+        function clearBranch3HoverUi() {
+            branch3HoverName = null;
+            if (branchHoverLabel) {
+                branchHoverLabel.classList.remove("visible");
+            }
+            if (branchImageMap) {
+                branchImageMap.style.cursor = "default";
+            }
+        }
+
+        function loadImageAsset(src) {
+            return new Promise(function (resolve, reject) {
+                const img = new Image();
+                img.onload = function () { resolve(img); };
+                img.onerror = function () { reject(new Error(`Failed to load ${src}`)); };
+                img.src = src;
+            });
+        }
+
+        function ensureBranchBaseImage() {
+            return new Promise(function (resolve, reject) {
+                if (!branchBaseImage) {
+                    reject(new Error("Missing branch base image element"));
+                    return;
+                }
+                if (branchBaseImage.complete && branchBaseImage.naturalWidth > 0) {
+                    resolve(branchBaseImage);
+                    return;
+                }
+                branchBaseImage.addEventListener("load", function () {
+                    resolve(branchBaseImage);
+                }, { once: true });
+                branchBaseImage.addEventListener("error", function () {
+                    reject(new Error("Failed to load base image"));
+                }, { once: true });
+            });
+        }
+
+        function ensureBranch3Assets() {
+            if (branch3AssetsReady) {
+                return Promise.resolve(true);
+            }
+            if (branch3AssetsFailed) {
+                return Promise.resolve(false);
+            }
+            if (!branchImageMap || !branchBaseImage || !branchMaskCanvas) {
+                branch3AssetsFailed = true;
+                return Promise.resolve(false);
+            }
+            if (branch3LoadPromise) {
+                return branch3LoadPromise;
+            }
+
+            const sources = [];
+            (branchData["3"] || []).forEach(function (loc) {
+                const normalized = normalizeName(loc.name);
+                const src = branch3MaskFiles[normalized];
+                if (!src) return;
+                sources.push({
+                    normalized: normalized,
+                    location: loc,
+                    src: src
+                });
+            });
+
+            if (sources.length === 0) {
+                branch3AssetsFailed = true;
+                return Promise.resolve(false);
+            }
+
+            branch3LoadPromise = Promise.all(sources.map(function (item) {
+                return loadImageAsset(item.src).then(function (img) {
+                    return { normalized: item.normalized, location: item.location, image: img, scaledMask: null };
+                });
+            }))
+                .then(function (entries) {
+                    return ensureBranchBaseImage().then(function () {
+                        branch3MaskEntries.length = 0;
+                        entries.forEach(function (entry) {
+                            branch3MaskEntries.push(entry);
+                            branch3EntryByName[entry.normalized] = entry;
+                        });
+                        branch3AssetsReady = true;
+                        branch3AssetsFailed = false;
+                        branch3LoadPromise = null;
+                        return true;
+                    });
+                })
+                .catch(function () {
+                    branch3AssetsReady = false;
+                    branch3AssetsFailed = true;
+                    branch3LoadPromise = null;
+                    return false;
+                });
+
+            return branch3LoadPromise;
+        }
+
+        function getBranch3LocationsByName() {
+            const out = {};
+            (branchData["3"] || []).forEach(function (loc) {
+                out[normalizeName(loc.name)] = loc;
+            });
+            return out;
+        }
+
+        function unionBounds(a, b) {
+            if (!a) return b;
+            if (!b) return a;
+            const minX = Math.min(a.x, b.x);
+            const minY = Math.min(a.y, b.y);
+            const maxX = Math.max(a.x + a.width - 1, b.x + b.width - 1);
+            const maxY = Math.max(a.y + a.height - 1, b.y + b.height - 1);
+            return {
+                x: minX,
+                y: minY,
+                width: (maxX - minX + 1),
+                height: (maxY - minY + 1)
+            };
+        }
+
+        function findPixelBounds(pixels, width, height, isMatch) {
+            let minX = width;
+            let minY = height;
+            let maxX = -1;
+            let maxY = -1;
+
+            for (let y = 0, p = 0; y < height; y += 1) {
+                for (let x = 0; x < width; x += 1, p += 4) {
+                    if (!isMatch(pixels, p)) continue;
+                    if (x < minX) minX = x;
+                    if (y < minY) minY = y;
+                    if (x > maxX) maxX = x;
+                    if (y > maxY) maxY = y;
+                }
+            }
+
+            if (maxX < 0 || maxY < 0) return null;
+            return {
+                x: minX,
+                y: minY,
+                width: (maxX - minX + 1),
+                height: (maxY - minY + 1)
+            };
+        }
+
+        function computeBranch3Alignment(width, height, scratchCtx) {
+            if (!branchBaseImage) {
+                return { scaleX: 1, scaleY: 1, offsetX: 0, offsetY: 0 };
+            }
+
+            scratchCtx.setTransform(1, 0, 0, 1, 0, 0);
+            scratchCtx.clearRect(0, 0, width, height);
+            scratchCtx.drawImage(branchBaseImage, 0, 0, width, height);
+            const basePixels = scratchCtx.getImageData(0, 0, width, height).data;
+            let baseBounds = findPixelBounds(basePixels, width, height, function (pixels, idx) {
+                return pixels[idx + 3] > BRANCH3_MASK_ALPHA_MIN;
+            });
+            if (baseBounds && baseBounds.width > (width * 0.98) && baseBounds.height > (height * 0.98)) {
+                const darkBounds = findPixelBounds(basePixels, width, height, function (pixels, idx) {
+                    const alpha = pixels[idx + 3];
+                    if (alpha <= BRANCH3_MASK_ALPHA_MIN) return false;
+                    const rgbSum = pixels[idx] + pixels[idx + 1] + pixels[idx + 2];
+                    return rgbSum < BRANCH3_BASE_DARK_SUM;
+                });
+                if (darkBounds) {
+                    baseBounds = darkBounds;
+                }
+            }
+
+            let maskBounds = null;
+            branch3MaskEntries.forEach(function (entry) {
+                scratchCtx.setTransform(1, 0, 0, 1, 0, 0);
+                scratchCtx.clearRect(0, 0, width, height);
+                scratchCtx.drawImage(entry.image, 0, 0, width, height);
+                const pixels = scratchCtx.getImageData(0, 0, width, height).data;
+                const entryBounds = findPixelBounds(pixels, width, height, function (pix, idx) {
+                    const alpha = pix[idx + 3];
+                    if (alpha <= BRANCH3_MASK_ALPHA_MIN) return false;
+                    const rgbSum = pix[idx] + pix[idx + 1] + pix[idx + 2];
+                    return rgbSum > BRANCH3_MASK_WHITE_SUM;
+                });
+                maskBounds = unionBounds(maskBounds, entryBounds);
+            });
+
+            if (!baseBounds || !maskBounds || maskBounds.width <= 0 || maskBounds.height <= 0) {
+                return { scaleX: 1, scaleY: 1, offsetX: 0, offsetY: 0 };
+            }
+
+            const scaleX = baseBounds.width / maskBounds.width;
+            const scaleY = baseBounds.height / maskBounds.height;
+            const offsetX = baseBounds.x - (maskBounds.x * scaleX);
+            const offsetY = baseBounds.y - (maskBounds.y * scaleY);
+
+            return {
+                scaleX: scaleX * BRANCH3_ALIGN_TWEAK.scaleX,
+                scaleY: scaleY * BRANCH3_ALIGN_TWEAK.scaleY,
+                offsetX: offsetX + BRANCH3_ALIGN_TWEAK.offsetX,
+                offsetY: offsetY + BRANCH3_ALIGN_TWEAK.offsetY
+            };
+        }
+
+        function rebuildBranch3HitMap(force) {
+            if (!branch3AssetsReady || !branchMaskCanvas || !branchBaseImage) return;
+
+            const width = Math.round(branchBaseImage.clientWidth || 0);
+            const height = Math.round(branchBaseImage.clientHeight || 0);
+            if (width <= 0 || height <= 0) return;
+            if (!force && branch3HitMap && width === branch3MapWidth && height === branch3MapHeight) return;
+
+            branch3MapWidth = width;
+            branch3MapHeight = height;
+            branchMaskCanvas.width = width;
+            branchMaskCanvas.height = height;
+            branchMaskCanvas.style.width = `${width}px`;
+            branchMaskCanvas.style.height = `${height}px`;
+
+            const scratchCanvas = document.createElement("canvas");
+            scratchCanvas.width = width;
+            scratchCanvas.height = height;
+            const scratchCtx = scratchCanvas.getContext("2d", { willReadFrequently: true });
+            if (!scratchCtx) return;
+
+            const pixelCount = width * height;
+            branch3HitMap = new Int16Array(pixelCount);
+            branch3HitMap.fill(-1);
+
+            const alignment = computeBranch3Alignment(width, height, scratchCtx);
+            branch3MaskTransform = alignment;
+
+            branch3MaskEntries.forEach(function (entry, entryIndex) {
+                scratchCtx.setTransform(1, 0, 0, 1, 0, 0);
+                scratchCtx.clearRect(0, 0, width, height);
+                scratchCtx.setTransform(
+                    alignment.scaleX,
+                    0,
+                    0,
+                    alignment.scaleY,
+                    alignment.offsetX,
+                    alignment.offsetY
+                );
+                scratchCtx.drawImage(entry.image, 0, 0, width, height);
+                scratchCtx.setTransform(1, 0, 0, 1, 0, 0);
+                const pixels = scratchCtx.getImageData(0, 0, width, height).data;
+                const fillMask = new Uint8ClampedArray(pixels.length);
+
+                for (let i = 0, p = 0; i < pixelCount; i += 1, p += 4) {
+                    const alpha = pixels[p + 3];
+                    const rgbSum = pixels[p] + pixels[p + 1] + pixels[p + 2];
+                    if (alpha > BRANCH3_MASK_ALPHA_MIN && rgbSum > BRANCH3_MASK_WHITE_SUM) {
+                        branch3HitMap[i] = entryIndex;
+                        fillMask[p] = 255;
+                        fillMask[p + 1] = 255;
+                        fillMask[p + 2] = 255;
+                        fillMask[p + 3] = 255;
+                    }
+                }
+
+                const scaledCanvas = document.createElement("canvas");
+                scaledCanvas.width = width;
+                scaledCanvas.height = height;
+                const scaledCtx = scaledCanvas.getContext("2d");
+                if (scaledCtx) {
+                    const fillMaskImage = new ImageData(fillMask, width, height);
+                    scaledCtx.putImageData(fillMaskImage, 0, 0);
+                    entry.scaledMask = scaledCanvas;
+                }
+            });
+
+            branch3PaintCanvas = document.createElement("canvas");
+            branch3PaintCanvas.width = width;
+            branch3PaintCanvas.height = height;
+            branch3PaintCtx = branch3PaintCanvas.getContext("2d");
+        }
+
+        function rgbaFromHex(hexColor, alpha) {
+            const clean = String(hexColor || "").replace("#", "").trim();
+            const full = clean.length === 3
+                ? `${clean[0]}${clean[0]}${clean[1]}${clean[1]}${clean[2]}${clean[2]}`
+                : clean;
+            const r = parseInt(full.slice(0, 2), 16) || 0;
+            const g = parseInt(full.slice(2, 4), 16) || 0;
+            const b = parseInt(full.slice(4, 6), 16) || 0;
+            return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+        }
+
+        function drawBranch3Mask(targetCtx, entry, color, alpha) {
+            if (!targetCtx || !entry || !entry.scaledMask || !branch3PaintCanvas || !branch3PaintCtx) return;
+            branch3PaintCtx.clearRect(0, 0, branch3PaintCanvas.width, branch3PaintCanvas.height);
+            branch3PaintCtx.drawImage(entry.scaledMask, 0, 0);
+            branch3PaintCtx.globalCompositeOperation = "source-in";
+            branch3PaintCtx.fillStyle = rgbaFromHex(color, alpha);
+            branch3PaintCtx.fillRect(0, 0, branch3PaintCanvas.width, branch3PaintCanvas.height);
+            branch3PaintCtx.globalCompositeOperation = "source-over";
+            targetCtx.drawImage(branch3PaintCanvas, 0, 0);
+        }
+
+        function renderBranch3Overlay(branchByName) {
+            if (!branch3AssetsReady || !branchMaskCanvas) return;
+            rebuildBranch3HitMap(false);
+            if (!branch3HitMap || branchMaskCanvas.width === 0 || branchMaskCanvas.height === 0) return;
+
+            const ctx = branchMaskCanvas.getContext("2d");
+            if (!ctx) return;
+            ctx.clearRect(0, 0, branchMaskCanvas.width, branchMaskCanvas.height);
+
+            const selected = branch3SelectedName ? branch3EntryByName[branch3SelectedName] : null;
+            const hovered = branch3HoverName ? branch3EntryByName[branch3HoverName] : null;
+
+            branch3MaskEntries.forEach(function (entry) {
+                const loc = branchByName[entry.normalized];
+                if (!loc) return;
+                drawBranch3Mask(ctx, entry, LEVELS[loc.level].markerColor, 0.34);
+            });
+
+            if (selected) {
+                const selectedLoc = branchByName[selected.normalized];
+                if (selectedLoc) {
+                    drawBranch3Mask(ctx, selected, LEVELS[selectedLoc.level].markerColor, 0.56);
+                }
+            }
+            if (hovered) {
+                const hoveredLoc = branchByName[hovered.normalized];
+                if (hoveredLoc) {
+                    const isSame = selected && hovered.normalized === selected.normalized;
+                    drawBranch3Mask(ctx, hovered, LEVELS[hoveredLoc.level].markerColor, isSame ? 0.74 : 0.66);
+                }
+            }
+        }
+
+        function getBranch3HitFromEvent(event, branchByName) {
+            if (!branch3HitMap || !branchBaseImage || !branch3MapWidth || !branch3MapHeight) return null;
+
+            const rect = branchBaseImage.getBoundingClientRect();
+            if (!rect.width || !rect.height) return null;
+            if (
+                event.clientX < rect.left ||
+                event.clientX > rect.right ||
+                event.clientY < rect.top ||
+                event.clientY > rect.bottom
+            ) {
+                return null;
+            }
+
+            const x = Math.max(0, Math.min(
+                branch3MapWidth - 1,
+                Math.floor(((event.clientX - rect.left) / rect.width) * branch3MapWidth)
+            ));
+            const y = Math.max(0, Math.min(
+                branch3MapHeight - 1,
+                Math.floor(((event.clientY - rect.top) / rect.height) * branch3MapHeight)
+            ));
+
+            const hitIndex = branch3HitMap[(y * branch3MapWidth) + x];
+            if (hitIndex < 0 || hitIndex >= branch3MaskEntries.length) {
+                return null;
+            }
+
+            const hitEntry = branch3MaskEntries[hitIndex];
+            return branchByName[hitEntry.normalized] ? hitEntry.normalized : null;
+        }
+
+        function updateBranch3HoverLabel(normalizedName, event) {
+            if (!branchHoverLabel || !branchImageMap || !event) return;
+            if (!normalizedName) {
+                branchHoverLabel.classList.remove("visible");
+                return;
+            }
+
+            const loc = getBranch3LocationsByName()[normalizedName];
+            if (!loc) {
+                branchHoverLabel.classList.remove("visible");
+                return;
+            }
+
+            const frameRect = branchImageMap.getBoundingClientRect();
+            const x = Math.max(8, Math.min(frameRect.width - 8, event.clientX - frameRect.left));
+            const y = Math.max(8, Math.min(frameRect.height - 8, event.clientY - frameRect.top));
+
+            branchHoverLabel.textContent = loc.name;
+            branchHoverLabel.style.left = `${x}px`;
+            branchHoverLabel.style.top = `${y}px`;
+            branchHoverLabel.classList.add("visible");
+        }
+
+        function bindBranch3Events() {
+            if (branch3EventsBound || !branchImageMap) return;
+            branch3EventsBound = true;
+
+            branchImageMap.addEventListener("mousemove", function (event) {
+                if (currentBranch !== "3" || !branch3AssetsReady) return;
+                const branchByName = getBranch3LocationsByName();
+                const hitName = getBranch3HitFromEvent(event, branchByName);
+                if (hitName !== branch3HoverName) {
+                    branch3HoverName = hitName;
+                    renderBranch3Overlay(branchByName);
+                }
+                branchImageMap.style.cursor = hitName ? "pointer" : "default";
+                updateBranch3HoverLabel(hitName, event);
+            });
+
+            branchImageMap.addEventListener("mouseleave", function () {
+                if (currentBranch !== "3") return;
+                clearBranch3HoverUi();
+                renderBranch3Overlay(getBranch3LocationsByName());
+            });
+
+            branchImageMap.addEventListener("click", function (event) {
+                if (currentBranch !== "3" || !branch3AssetsReady) return;
+                const branchByName = getBranch3LocationsByName();
+                const hitName = getBranch3HitFromEvent(event, branchByName);
+                if (!hitName) return;
+                branch3SelectedName = hitName;
+                renderBranch3Overlay(branchByName);
+                const loc = branchByName[hitName];
+                if (loc) {
+                    setLocationDetailsContent(loc, "3");
+                }
+            });
+        }
+
+        function renderBranch3ImageMap() {
+            const branchByName = getBranch3LocationsByName();
+            setMapMode(true);
+
+            if (geoLayer) {
+                map.removeLayer(geoLayer);
+                geoLayer = null;
+            }
+            currentBounds = null;
+            map.setMaxBounds(null);
+
+            if (!branch3AssetsReady) {
+                ensureBranch3Assets().then(function (loaded) {
+                    if (loaded && currentBranch === "3") {
+                        bindBranch3Events();
+                        rebuildBranch3HitMap(true);
+                        renderBranch3Overlay(branchByName);
+                    }
+                });
+                return;
+            }
+
+            bindBranch3Events();
+            rebuildBranch3HitMap(false);
+            renderBranch3Overlay(branchByName);
+        }
+
         function renderLegend(branchKey) {
             const locations = getBranchLocations(branchKey);
             const grouped = {};
@@ -792,6 +1298,14 @@ document.addEventListener("DOMContentLoaded", function () {
         }
 
         function renderMap(branchKey, fitToBranch) {
+            if (branchKey === "3" && branchImageMap && branchBaseImage && branchMaskCanvas) {
+                renderBranch3ImageMap();
+                return;
+            }
+
+            setMapMode(false);
+            clearBranch3HoverUi();
+
             if (!albayGeoJsonData) return;
             const locations = getBranchLocations(branchKey);
             const branchByName = {};
@@ -847,21 +1361,25 @@ document.addEventListener("DOMContentLoaded", function () {
 
                     layer.on("click", function () {
                         selectedName = normalized;
+
                         geoLayer.setStyle(styleForFeature);
+
                         geoLayer.eachLayer(function (lyr) {
                             const nm = normalizeName(getFeatureName(lyr.feature));
+
                             if (nm === selectedName) {
+                                lyr.setStyle({
+                                    weight: 3,
+                                    color: "#0b1220",
+                                    fillOpacity: 0.78
+                                });
+
                                 lyr.bringToFront();
                             }
                         });
-                        if (locationDetails) {
-                            locationDetails.innerHTML =
-                                `<h3>${match.name}</h3>` +
-                                `<p><strong>Type:</strong> ${match.type}</p>` +
-                                `<p><strong>Branch:</strong> Branch ${branchKey}</p>` +
-                                `<p><strong>Electrification:</strong> ${LEVELS[match.level].label}</p>`;
-                        }
-                    });
+
+    setLocationDetailsContent(match, branchKey);
+});
                 }
             }).addTo(map);
 
@@ -888,15 +1406,20 @@ document.addEventListener("DOMContentLoaded", function () {
 
         function renderBranch(branchKey) {
             currentBranch = branchKey;
+            if (branchKey !== "3") {
+                branch3SelectedName = null;
+            }
+            clearBranch3HoverUi();
             renderLegend(branchKey);
             renderEditor(branchKey);
-            renderMap(branchKey, true);
 
             if (locationDetails) {
                 locationDetails.innerHTML =
                     "<h3>Location Details</h3>" +
                     "<p>Click a location on the map to see details.</p>";
             }
+
+            renderMap(branchKey, true);
         }
 
         map.on("drag", function () {
@@ -911,7 +1434,19 @@ document.addEventListener("DOMContentLoaded", function () {
             });
         }
 
+        window.addEventListener("resize", function () {
+            if (currentBranch === "3" && branch3AssetsReady) {
+                rebuildBranch3HitMap(true);
+                renderBranch3Overlay(getBranch3LocationsByName());
+            }
+        });
+
+        onMapPanelShown = function () {
+            renderBranch(currentBranch);
+        };
+
         renderBranch(currentBranch);
+        ensureBranch3Assets();
 
         fetch(albayGeoJsonUrl)
             .then(function (response) {
@@ -921,13 +1456,10 @@ document.addEventListener("DOMContentLoaded", function () {
             .then(function (data) {
                 albayGeoJsonData = data;
                 displayGeoJson = buildDisplayGeoJson(data);
-                onMapPanelShown = function () {
-                    renderBranch(currentBranch);
-                };
                 renderBranch(currentBranch);
             })
             .catch(function () {
-                if (locationDetails) {
+                if (locationDetails && currentBranch !== "3") {
                     locationDetails.innerHTML =
                         "<h3>Map Data Error</h3><p>Unable to load Albay boundary data right now.</p>";
                 }
@@ -936,6 +1468,664 @@ document.addEventListener("DOMContentLoaded", function () {
         setTimeout(function () {
             map.invalidateSize();
         }, 120);
+    }
+
+    function initSvgOverlayMap() {
+        const mapContainers = Array.from(document.querySelectorAll("[data-interactive-map]"));
+        if (mapContainers.length === 0) return;
+
+        const LEVELS = {
+            "90-100": { label: "90% to 100%", markerColor: "#6aa84f" },
+            "80-89": { label: "80% to 89%", markerColor: "#f4b400" },
+            "70-79": { label: "70% to 79%", markerColor: "#ef8a30" },
+            "60-69": { label: "60% to 69%", markerColor: "#f4511e" }
+        };
+        const LEVEL_ORDER = ["90-100", "80-89", "70-79", "60-69"];
+
+        const branchData = {
+            "1": [
+                { name: "Tabaco City", type: "City", level: "90-100", description: "" },
+                { name: "Santo Domingo", type: "Municipality", level: "90-100", description: "" },
+                { name: "Tiwi", type: "Municipality", level: "80-89", description: "" },
+                { name: "Malinao", type: "Municipality", level: "80-89", description: "" },
+                { name: "Malilipot", type: "Municipality", level: "80-89", description: "" },
+                { name: "Bacacay", type: "Municipality", level: "70-79", description: "" }
+            ],
+            "2": [
+                { name: "Daraga", type: "Municipality", level: "90-100", description: "" },
+                { name: "Legazpi City", type: "City", level: "90-100", description: "" },
+                { name: "Camalig", type: "Municipality", level: "80-89", description: "" },
+                { name: "Manito", type: "Municipality", level: "80-89", description: "" },
+                { name: "Rapu-Rapu", type: "Municipality", level: "60-69", description: "" }
+            ],
+            "3": [
+                { name: "Polangui", type: "Municipality", level: "90-100", description: "" },
+                { name: "Ligao City", type: "City", level: "90-100", description: "" },
+                { name: "Guinobatan", type: "Municipality", level: "90-100", description: "" },
+                { name: "Libon", type: "Municipality", level: "80-89", description: "" },
+                { name: "Oas", type: "Municipality", level: "80-89", description: "" },
+                { name: "Pio Duran", type: "Municipality", level: "70-79", description: "" },
+                { name: "Jovellar", type: "Municipality", level: "70-79", description: "" }
+            ]
+        };
+
+        const defaultLocationMarkup = locationDetails ? locationDetails.innerHTML : "";
+
+        function normalizeName(name) {
+            return String(name || "")
+                .toLowerCase()
+                .replace("city of ", "")
+                .replace(" city", "")
+                .replace(/[^a-z0-9]/g, "");
+        }
+
+        const locationIndex = new Map();
+        Object.keys(branchData).forEach(function (branchKey) {
+            branchData[branchKey].forEach(function (loc) {
+                loc.branch = branchKey;
+                locationIndex.set(normalizeName(loc.name), loc);
+            });
+        });
+
+        const mapContexts = [];
+        let selectedLocationKey = null;
+        let currentBranch = branchSelect ? branchSelect.value : "3";
+
+        function getBranchLocations(branchKey) {
+            if (!branchKey || branchKey === "all") {
+                return Array.from(locationIndex.values());
+            }
+            return branchData[branchKey] || [];
+        }
+
+        function applyLevelStyles(region, levelKey) {
+            const level = LEVELS[levelKey];
+            if (!level) return;
+            region.style.setProperty("--region-color", level.markerColor);
+            region.dataset.level = levelKey;
+        }
+
+        function updateLocationDetails(loc) {
+            if (!locationDetails) return;
+            if (!loc) {
+                locationDetails.innerHTML = defaultLocationMarkup ||
+                    "<h3>Location Details</h3><p>Click a location on the map to see details.</p>";
+                return;
+            }
+            locationDetails.innerHTML =
+                `<h3>${loc.name}</h3>` +
+                `<p><strong>Type:</strong> ${loc.type}</p>` +
+                `<p><strong>Branch:</strong> Branch ${loc.branch}</p>` +
+                `<p><strong>Electrification:</strong> ${LEVELS[loc.level].label}</p>`;
+        }
+
+        function renderLegend(branchKey) {
+            if (!levelLegend) return;
+            const locations = getBranchLocations(branchKey);
+            const grouped = {};
+            LEVEL_ORDER.forEach(function (level) {
+                grouped[level] = locations.filter(function (loc) { return loc.level === level; });
+            });
+
+            levelLegend.innerHTML = "";
+            LEVEL_ORDER.forEach(function (level) {
+                if (grouped[level].length === 0) return;
+
+                const block = document.createElement("div");
+                block.className = "legend-group";
+
+                const title = document.createElement("div");
+                title.className = "legend-title";
+                title.textContent = LEVELS[level].label;
+                title.style.color = LEVELS[level].markerColor;
+
+                const list = document.createElement("ul");
+                list.className = "legend-items";
+                grouped[level].forEach(function (loc) {
+                    const item = document.createElement("li");
+                    item.textContent = loc.name;
+                    item.style.color = LEVELS[level].markerColor;
+                    list.appendChild(item);
+                });
+
+                block.appendChild(title);
+                block.appendChild(list);
+                levelLegend.appendChild(block);
+            });
+        }
+
+        function renderEditor(branchKey) {
+            if (!levelEditor) return;
+            const locations = getBranchLocations(branchKey);
+            levelEditor.innerHTML = "";
+
+            locations.forEach(function (loc) {
+                const row = document.createElement("div");
+                row.className = "editor-row";
+
+                const label = document.createElement("label");
+                label.textContent = loc.name;
+
+                const select = document.createElement("select");
+                LEVEL_ORDER.forEach(function (level) {
+                    const option = document.createElement("option");
+                    option.value = level;
+                    option.textContent = LEVELS[level].label;
+                    if (loc.level === level) option.selected = true;
+                    select.appendChild(option);
+                });
+
+                select.addEventListener("change", function () {
+                    loc.level = select.value;
+                    mapContexts.forEach(function (context) {
+                        const key = normalizeName(loc.name);
+                        const regions = context.regionsByName.get(key) || [];
+                        regions.forEach(function (region) {
+                            applyLevelStyles(region, loc.level);
+                        });
+                    });
+                    renderLegend(branchKey);
+                    if (selectedLocationKey === normalizeName(loc.name)) {
+                        updateLocationDetails(loc);
+                    }
+                });
+
+                row.appendChild(label);
+                row.appendChild(select);
+                levelEditor.appendChild(row);
+            });
+        }
+
+        function applyBranch(branchKey) {
+            currentBranch = branchKey;
+            mapContexts.forEach(function (context) {
+                context.regions.forEach(function (region) {
+                    const visible = branchKey === "all" || !region.dataset.branch || region.dataset.branch === branchKey;
+                    region.style.display = visible ? "" : "none";
+                    if (!visible && context.activeRegions.indexOf(region) !== -1) {
+                        context.clearActive();
+                    }
+                });
+            });
+            renderLegend(branchKey);
+            renderEditor(branchKey);
+            selectedLocationKey = null;
+            updateLocationDetails(null);
+        }
+
+        function parseAreaFiles(rawList) {
+            if (!rawList) return [];
+            return rawList
+                .split(",")
+                .map(function (entry) { return entry.trim(); })
+                .filter(function (entry) { return entry.length > 0; });
+        }
+
+        function displayNameFromFilename(fileName) {
+            const cleaned = String(fileName || "").replace(/\.svg$/i, "");
+            let decoded = cleaned;
+            try {
+                decoded = decodeURIComponent(cleaned);
+            } catch (error) {
+                decoded = cleaned;
+            }
+            return decoded
+                .replace(/([a-z])([A-Z])/g, "$1 $2")
+                .replace(/[_-]+/g, " ")
+                .trim();
+        }
+
+        function buildAreaUrl(base, fileName) {
+            const safeBase = String(base || "").replace(/\/$/, "");
+            if (!safeBase) return fileName;
+            return `${safeBase}/${encodeURIComponent(fileName)}`;
+        }
+
+        function stripInlinePaintStyles(shape) {
+            shape.removeAttribute("fill");
+            shape.removeAttribute("stroke");
+            shape.style.removeProperty("fill");
+            shape.style.removeProperty("stroke");
+            shape.style.removeProperty("fill-opacity");
+            shape.style.removeProperty("stroke-opacity");
+            shape.style.removeProperty("stroke-width");
+        }
+
+        function tagRegionShape(shape, areaName) {
+            if (!shape.classList.contains("map-region")) {
+                shape.classList.add("map-region");
+            }
+            if (!shape.hasAttribute("data-name")) {
+                shape.setAttribute("data-name", areaName);
+            }
+            stripInlinePaintStyles(shape);
+        }
+
+        function splitPathIntoShapes(shape) {
+            if (!shape || shape.nodeName.toLowerCase() !== "path") {
+                return [shape];
+            }
+            const d = shape.getAttribute("d");
+            if (!d) {
+                return [shape];
+            }
+            const parts = d.match(/M[^M]*/g);
+            if (!parts || parts.length <= 1) {
+                return [shape];
+            }
+            const parent = shape.parentNode;
+            if (!parent) {
+                return [shape];
+            }
+            const clones = parts.map(function (part) {
+                const clone = shape.cloneNode(false);
+                clone.setAttribute("d", part.trim());
+                clone.removeAttribute("id");
+                parent.insertBefore(clone, shape);
+                return clone;
+            });
+            parent.removeChild(shape);
+            return clones;
+        }
+
+        function appendSvgArea(overlay, svgText, areaName) {
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(svgText, "image/svg+xml");
+            const svgEl = doc.documentElement;
+            if (!svgEl || svgEl.nodeName.toLowerCase() !== "svg") {
+                return;
+            }
+
+            if (!overlay.getAttribute("viewBox") && svgEl.getAttribute("viewBox")) {
+                overlay.setAttribute("viewBox", svgEl.getAttribute("viewBox"));
+            }
+
+            const group = document.createElementNS("http://www.w3.org/2000/svg", "g");
+            group.setAttribute("data-area", areaName);
+
+            while (svgEl.childNodes.length) {
+                group.appendChild(svgEl.childNodes[0]);
+            }
+
+            overlay.appendChild(group);
+
+            const namedRegions = Array.from(group.querySelectorAll("[data-name]")).filter(function (el) {
+                return !el.closest("defs");
+            });
+
+            if (namedRegions.length > 0) {
+                namedRegions.forEach(function (region) {
+                    const regionName = region.getAttribute("data-name") || areaName;
+                    const isShape = region.matches && region.matches("path, polygon, polyline, rect, circle, ellipse");
+                    if (isShape) {
+                        splitPathIntoShapes(region).forEach(function (shape) {
+                            tagRegionShape(shape, regionName);
+                        });
+                        return;
+                    }
+                    const regionShapes = Array.from(
+                        region.querySelectorAll("path, polygon, polyline, rect, circle, ellipse")
+                    ).filter(function (el) {
+                        return !el.closest("defs");
+                    });
+                    regionShapes.forEach(function (shape) {
+                        splitPathIntoShapes(shape).forEach(function (part) {
+                            tagRegionShape(part, regionName);
+                        });
+                    });
+                });
+                return;
+            }
+
+            const shapes = Array.from(
+                group.querySelectorAll("path, polygon, polyline, rect, circle, ellipse")
+            ).filter(function (el) {
+                return !el.closest("defs");
+            });
+
+            if (shapes.length > 0) {
+                shapes.forEach(function (shape) {
+                    splitPathIntoShapes(shape).forEach(function (part) {
+                        tagRegionShape(part, areaName);
+                    });
+                });
+            }
+        }
+
+        function loadSingleOverlaySvg(overlay, src) {
+            if (!src) {
+                return Promise.resolve();
+            }
+            return fetch(src)
+                .then(function (response) {
+                    if (!response.ok) {
+                        throw new Error("Unable to load SVG overlay");
+                    }
+                    return response.text();
+                })
+                .then(function (svgText) {
+                    const parser = new DOMParser();
+                    const doc = parser.parseFromString(svgText, "image/svg+xml");
+                    const svgEl = doc.documentElement;
+                    if (!svgEl || svgEl.nodeName.toLowerCase() !== "svg") {
+                        return;
+                    }
+                    if (!overlay.getAttribute("viewBox") && svgEl.getAttribute("viewBox")) {
+                        overlay.setAttribute("viewBox", svgEl.getAttribute("viewBox"));
+                    }
+                    overlay.innerHTML = svgEl.innerHTML;
+                })
+                .catch(function () {
+                });
+        }
+
+        function loadOverlaySvg(overlay) {
+            const areaFiles = parseAreaFiles(
+                overlay.getAttribute("data-area-files") || overlay.getAttribute("data-areas")
+            );
+            const areaBase = overlay.getAttribute("data-area-base") || "";
+            const src = overlay.getAttribute("data-src");
+
+            if (areaFiles.length > 0) {
+                overlay.innerHTML = "";
+                const loaders = areaFiles.map(function (fileName) {
+                    const areaName = displayNameFromFilename(fileName);
+                    const url = buildAreaUrl(areaBase, fileName);
+                    return fetch(url)
+                        .then(function (response) {
+                            if (!response.ok) {
+                                throw new Error("Unable to load SVG area");
+                            }
+                            return response.text();
+                        })
+                        .then(function (svgText) {
+                            appendSvgArea(overlay, svgText, areaName);
+                        })
+                        .catch(function () {
+                            // Skip missing/invalid area files and continue loading others.
+                        });
+                });
+
+                return Promise.allSettled(loaders).then(function () {
+                    if (!overlay.querySelector("[data-name]")) {
+                        return loadSingleOverlaySvg(overlay, src);
+                    }
+                    return;
+                });
+            }
+
+            return loadSingleOverlaySvg(overlay, src);
+        }
+
+        function setupInteractiveMap(map, overlay, tooltip, title, body) {
+            const regions = Array.from(overlay.querySelectorAll("[data-name]"));
+            const regionsByName = new Map();
+            let hoverKey = null;
+            let hoverLayer = overlay.querySelector(".map-hover-layer");
+            if (!hoverLayer) {
+                hoverLayer = document.createElementNS("http://www.w3.org/2000/svg", "g");
+                hoverLayer.classList.add("map-hover-layer");
+                overlay.appendChild(hoverLayer);
+            }
+            let activeLayer = overlay.querySelector(".map-active-layer");
+            if (!activeLayer) {
+                activeLayer = document.createElementNS("http://www.w3.org/2000/svg", "g");
+                activeLayer.classList.add("map-active-layer");
+                overlay.appendChild(activeLayer);
+            }
+
+            regions.forEach(function (region) {
+                const key = normalizeName(region.getAttribute("data-name"));
+                if (!regionsByName.has(key)) {
+                    regionsByName.set(key, []);
+                }
+                regionsByName.get(key).push(region);
+
+                const loc = locationIndex.get(key);
+                if (loc) {
+                    region.dataset.branch = loc.branch;
+                    if (!region.dataset.description && loc.description) {
+                        region.dataset.description = loc.description;
+                    }
+                    applyLevelStyles(region, loc.level);
+                }
+            });
+
+            const context = {
+                map: map,
+                overlay: overlay,
+                tooltip: tooltip,
+                title: title,
+                body: body,
+                regions: regions,
+                regionsByName: regionsByName,
+                activeRegions: [],
+                activeKey: null,
+                clearActive: null
+            };
+
+            function clearActiveRegions() {
+                if (context.activeRegions.length > 0) {
+                    context.activeRegions.forEach(function (region) {
+                        region.classList.remove("is-active");
+                    });
+                }
+                context.activeRegions = [];
+                context.activeKey = null;
+            }
+
+            function clearActive() {
+                clearActiveRegions();
+                clearActiveLayer();
+                tooltip.classList.remove("is-visible");
+                tooltip.setAttribute("aria-hidden", "true");
+            }
+
+            context.clearActive = clearActive;
+
+            function bringRegionsToFront(list) {
+                const handledGroups = new Set();
+                list.forEach(function (region) {
+                    const group = region.closest("[data-area]");
+                    if (group && group.parentNode) {
+                        if (!handledGroups.has(group)) {
+                            handledGroups.add(group);
+                            group.parentNode.appendChild(group);
+                        }
+                    }
+                    if (region.parentNode) {
+                        region.parentNode.appendChild(region);
+                    }
+                });
+                if (hoverLayer && hoverLayer.parentNode) {
+                    hoverLayer.parentNode.appendChild(hoverLayer);
+                }
+                if (activeLayer && activeLayer.parentNode) {
+                    activeLayer.parentNode.appendChild(activeLayer);
+                }
+            }
+
+            function clearHoverLayer() {
+                if (hoverLayer) {
+                    hoverLayer.innerHTML = "";
+                }
+                hoverKey = null;
+            }
+
+            function renderHoverLayer(groupRegions) {
+                if (!hoverLayer) return;
+                hoverLayer.innerHTML = "";
+                groupRegions.forEach(function (region) {
+                    const clone = region.cloneNode(true);
+                    if (clone.hasAttribute("id")) {
+                        clone.removeAttribute("id");
+                    }
+                    hoverLayer.appendChild(clone);
+                });
+            }
+
+            function clearActiveLayer() {
+                if (activeLayer) {
+                    activeLayer.innerHTML = "";
+                }
+            }
+
+            function renderActiveLayer(groupRegions) {
+                if (!activeLayer) return;
+                activeLayer.innerHTML = "";
+                groupRegions.forEach(function (region) {
+                    const clone = region.cloneNode(true);
+                    if (clone.hasAttribute("id")) {
+                        clone.removeAttribute("id");
+                    }
+                    activeLayer.appendChild(clone);
+                });
+            }
+
+            function setHover(region) {
+                if (!region) {
+                    clearHoverLayer();
+                    return;
+                }
+                const key = normalizeName(region.getAttribute("data-name"));
+                if (key === hoverKey) return;
+                hoverKey = key;
+                const groupRegions = regionsByName.get(key) || [region];
+                renderHoverLayer(groupRegions);
+                bringRegionsToFront(groupRegions);
+            }
+
+            function setActive(region) {
+                if (!region) return;
+                const key = normalizeName(region.getAttribute("data-name"));
+                const groupRegions = regionsByName.get(key) || [region];
+                if (context.activeKey !== key) {
+                    clearActiveRegions();
+                }
+                groupRegions.forEach(function (item) {
+                    item.classList.add("is-active");
+                });
+                context.activeRegions = groupRegions;
+                context.activeKey = key;
+                bringRegionsToFront(groupRegions);
+                renderActiveLayer(groupRegions);
+            }
+
+            function getPoint(event, region) {
+                if (event && typeof event.clientX === "number" && typeof event.clientY === "number") {
+                    return { x: event.clientX, y: event.clientY };
+                }
+                const rect = region.getBoundingClientRect();
+                return {
+                    x: rect.left + rect.width / 2,
+                    y: rect.top + rect.height / 2
+                };
+            }
+
+            function positionTooltip(point) {
+                const mapRect = map.getBoundingClientRect();
+                const tipRect = tooltip.getBoundingClientRect();
+                const padding = 12;
+
+                let left = point.x - mapRect.left + padding;
+                let top = point.y - mapRect.top + padding;
+
+                const maxLeft = mapRect.width - tipRect.width - padding;
+                const maxTop = mapRect.height - tipRect.height - padding;
+
+                if (left > maxLeft) left = maxLeft;
+                if (top > maxTop) top = maxTop;
+                if (left < padding) left = padding;
+                if (top < padding) top = padding;
+
+                tooltip.style.left = `${left}px`;
+                tooltip.style.top = `${top}px`;
+            }
+
+            function showTooltip(region, event) {
+                const name = region.getAttribute("data-name") || "Unknown";
+                const key = normalizeName(region.getAttribute("data-name"));
+                const loc = locationIndex.get(key);
+                const description = region.getAttribute("data-description") || (loc && loc.description) || "No description available.";
+                title.textContent = name;
+                if (loc && LEVELS[loc.level]) {
+                    const levelLabel = LEVELS[loc.level].label;
+                    body.innerHTML =
+                        `<div>${description}</div>` +
+                        `<div><strong>Electrification:</strong> ${levelLabel}</div>`;
+                } else {
+                    body.textContent = description;
+                }
+                tooltip.classList.add("is-visible");
+                tooltip.setAttribute("aria-hidden", "false");
+                const point = getPoint(event, region);
+                requestAnimationFrame(function () {
+                    positionTooltip(point);
+                });
+            }
+
+            overlay.addEventListener("mouseover", function (event) {
+                const region = event.target.closest("[data-name]");
+                if (!region || !overlay.contains(region)) return;
+                setHover(region);
+            });
+
+            overlay.addEventListener("mouseleave", function () {
+                clearHoverLayer();
+            });
+
+            map.addEventListener("click", function (event) {
+                const region = event.target.closest("[data-name]");
+                if (!region || !overlay.contains(region)) {
+                    clearActive();
+                    return;
+                }
+                event.stopPropagation();
+                setActive(region);
+                showTooltip(region, event);
+                const key = normalizeName(region.getAttribute("data-name"));
+                selectedLocationKey = key;
+                updateLocationDetails(locationIndex.get(key));
+            });
+
+        document.addEventListener("click", function (event) {
+            if (map.contains(event.target)) return;
+            clearActive();
+        });
+
+            mapContexts.push(context);
+        }
+
+        function initInteractiveMaps() {
+            const loaders = mapContainers.map(function (map) {
+                const overlay = map.querySelector("[data-map-overlay]");
+                const tooltip = map.querySelector("[data-map-tooltip]");
+                const title = map.querySelector("[data-map-tooltip-title]");
+                const body = map.querySelector("[data-map-tooltip-body]");
+
+                if (!overlay || !tooltip || !title || !body) return Promise.resolve();
+
+                return loadOverlaySvg(overlay).then(function () {
+                    setupInteractiveMap(map, overlay, tooltip, title, body);
+                });
+            });
+
+            return Promise.all(loaders);
+        }
+
+        initInteractiveMaps().then(function () {
+            applyBranch(currentBranch);
+        });
+
+        if (branchSelect) {
+            branchSelect.addEventListener("change", function () {
+                applyBranch(branchSelect.value);
+            });
+        }
+    }
+
+    if (!mapElement) {
+        initSvgOverlayMap();
     }
 });
 

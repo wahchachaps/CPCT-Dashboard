@@ -13,8 +13,6 @@ users = {
 
 @app.route("/")
 def index():
-    if "user" in session:
-        return redirect(url_for("dashboard"))
     return redirect(url_for("login"))
 
 

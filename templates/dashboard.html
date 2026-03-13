@@ -4,7 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Dashboard | CPCT</title>
-    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body class="dashboard-page">
@@ -184,10 +183,27 @@
                 </article>
 
                 <article class="panel-card map-card section-card" id="section-map">
+                    <h2>Map View</h2>
+                    <p class="section-note">Click a region to view quick details.</p>
                     <div class="status-board">
                         <div class="status-body">
                             <div class="map-frame">
-                                <div id="map"></div>
+                                <section class="interactive-map" data-interactive-map>
+                                    <img class="map-image" src="{{ url_for('static', filename='imgs/branch 3.png') }}" alt="Albay service map">
+                                    <svg class="map-overlay"
+                                         viewBox="0 0 7820 5531"
+                                         preserveAspectRatio="xMidYMid meet"
+                                         role="img"
+                                         aria-label="Clickable map regions"
+                                         data-map-overlay
+                                         data-area-base="{{ url_for('static', filename='imgs/branch 3') }}"
+                                         data-area-files="Polangui.svg, Ligao City.svg, Guinobatan.svg, Libon.svg, Oas.svg, Pio Duran.svg, Jovellar.svg"
+                                         data-src="{{ url_for('static', filename='imgs/branch 3.svg') }}"></svg>
+                                    <div class="map-tooltip" data-map-tooltip aria-hidden="true" role="dialog">
+                                        <div class="map-tooltip-title" data-map-tooltip-title></div>
+                                        <div class="map-tooltip-body" data-map-tooltip-body></div>
+                                    </div>
+                                </section>
                             </div>
                             <aside class="level-legend" id="levelLegend"></aside>
                         </div>
@@ -200,7 +216,7 @@
                             <select id="branchSelect">
                                 <option value="1">Branch 1</option>
                                 <option value="2">Branch 2</option>
-                                <option value="3">Branch 3</option>
+                                <option value="3" selected>Branch 3</option>
                             </select>
                         </div>
                         <div id="levelEditor"></div>
@@ -210,13 +226,13 @@
                         <h3>Location Details</h3>
                         <p>Click a location on the map to see details.</p>
                     </div>
+                    <p class="map-hint">Click anywhere outside a region to close the info box.</p>
                 </article>
             </div>
         </section>
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
     <script src="{{ url_for('static', filename='script.js') }}"></script>
 </body>
 </html>
