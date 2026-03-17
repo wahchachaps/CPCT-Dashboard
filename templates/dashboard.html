@@ -59,6 +59,16 @@
                     </span>
                     <span class="nav-text">Map View</span>
                 </a>
+                <a href="#section-uploads" class="nav-link">
+                    <span class="nav-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" focusable="false">
+                            <path d="M12 3v11" />
+                            <path d="M8.5 7.5L12 3l3.5 4.5" />
+                            <path d="M4 14.5v4.5h16v-4.5" />
+                        </svg>
+                    </span>
+                    <span class="nav-text">Data Uploads</span>
+                </a>
             </nav>
             <div class="sidebar-footer">
                 <a class="sidebar-logout" href="{{ url_for('logout') }}">Logout</a>
@@ -103,16 +113,64 @@
 
                 <article class="panel-card section-card wide-card" id="section-energy">
                     <h2>Energy Analytics</h2>
+                    <div class="graph-card hourly-day-card">
+                        <div class="uploaded-data-head">
+                            <div>
+                                <h3>Hourly Loading (kWh)</h3>
+                                <p class="upload-help">Hourly energy summed from 5-minute data for the selected day. Choose All days to show the maximum hourly total (sum of 5-minute values) across the month.</p>
+                            </div>
+                            <div class="upload-filter">
+                                <label for="hourlyMonthSelect">Month</label>
+                                <select id="hourlyMonthSelect">
+                                    <option value="">Loading months...</option>
+                                </select>
+                            </div>
+                            <div class="upload-filter">
+                                <label for="hourlyDaySelect">Day</label>
+                                <select id="hourlyDaySelect"></select>
+                            </div>
+                        </div>
+                        <div class="upload-chart-status" id="hourlyDayStatus"></div>
+                        <canvas id="hourlyDayChart"></canvas>
+                    </div>
+                    <div class="graph-card peak-load-card">
+                        <div class="uploaded-data-head">
+                            <div>
+                                <h3>Peak Load (Uploaded)</h3>
+                                <p class="upload-help">Peak Load, kW pulled from the EDD sheet (row 58) for each uploaded month.</p>
+                            </div>
+                            <div class="upload-filter">
+                                <label for="peakYearSelect">Year</label>
+                                <select id="peakYearSelect">
+                                    {% set has_year = false %}
+                                    {% for group in upload_groups %}
+                                        {% if group["year"] != "Unsorted" %}
+                                            {% set has_year = true %}
+                                            <option value="{{ group['year'] }}">{{ group["year"] }}</option>
+                                        {% endif %}
+                                    {% endfor %}
+                                    {% if not has_year %}
+                                        <option value="">No uploads yet</option>
+                                    {% endif %}
+                                </select>
+                            </div>
+                        </div>
+                        <div class="upload-chart-status" id="peakLoadStatus"></div>
+                        <canvas id="peakLoadChart"></canvas>
+                    </div>
                     <div class="graph-layout">
                         <div class="graph-card">
+                            <span class="chart-tag">EX</span>
                             <h3>Hourly Loading (kW) - Feb 2024</h3>
                             <canvas id="hourlyLoadingChart"></canvas>
                         </div>
                         <div class="graph-card">
+                            <span class="chart-tag">EX</span>
                             <h3>Substation Capacity vs Demand</h3>
                             <canvas id="capacityDemandChart"></canvas>
                         </div>
                         <div class="graph-card">
+                            <span class="chart-tag">EX</span>
                             <h3>Monthly Demand Profile</h3>
                             <canvas id="monthlyProfileChart"></canvas>
                         </div>
@@ -133,6 +191,7 @@
                             </table>
                         </div>
                         <div class="mix-block">
+                            <span class="chart-tag">EX</span>
                             <h3>Generation Mix</h3>
                             <canvas id="generationMixChart"></canvas>
                         </div>
@@ -172,10 +231,12 @@
                     <h2>Loss and Forecast</h2>
                     <div class="graph-layout two-col">
                         <div class="graph-card">
+                            <span class="chart-tag">EX</span>
                             <h3>Systems Loss</h3>
                             <canvas id="systemsLossChart"></canvas>
                         </div>
                         <div class="graph-card">
+                            <span class="chart-tag">EX</span>
                             <h3>Forecasted Supply vs Demand</h3>
                             <canvas id="forecastSupplyDemandChart"></canvas>
                         </div>
@@ -257,6 +318,101 @@
                         <p>Click a location on the map to see details.</p>
                     </div>
                     <p class="map-hint">Click anywhere outside a region to close the info box.</p>
+                </article>
+
+                <article class="panel-card section-card wide-card" id="section-uploads">
+                    <h2>Data Uploads</h2>
+                    <p class="section-note">Upload raw data files to refresh chart inputs.</p>
+                    <div class="upload-grid">
+                        <form class="upload-form" action="{{ url_for('upload_file') }}" method="POST" enctype="multipart/form-data">
+                            <div class="upload-warning">
+                                Upload raw Excel or CSV data only. Avoid formatted reports, merged cells, or pivot tables.
+                            </div>
+                            {% if upload_error == "in_use" %}
+                                <div class="upload-error is-visible">
+                                    That file is currently open or locked by another process. Close it and try again.
+                                </div>
+                            {% endif %}
+                            <label for="uploadCategory">File Type</label>
+                            <select id="uploadCategory" name="uploadCategory">
+                                <option value="hourly">Hourly Loading (kWh)</option>
+                                <option value="edd">EDD Report</option>
+                                <option value="other">Other</option>
+                            </select>
+                            <label for="uploadFiles">Select data file(s)</label>
+                            <input id="uploadFiles" name="uploadFiles" type="file" accept=".xlsx,.xls,.csv" multiple>
+                            <div class="upload-selected">
+                                <p class="upload-selected-empty" id="uploadSelectedEmpty">No files selected.</p>
+                                <ul class="upload-selected-list" id="uploadSelectedList"></ul>
+                            </div>
+                            <p class="upload-help">Tip: Use names like "EDD as of January 2026" so files sort into the right year.</p>
+                            <div class="upload-error" id="uploadError" role="alert" aria-live="polite"></div>
+                            <div class="upload-actions">
+                                <button type="submit" class="primary-btn" id="uploadSubmit" disabled>Upload Data</button>
+                            </div>
+                        </form>
+                        <div class="upload-list">
+                            <div class="upload-list-section">
+                                <div class="upload-list-header">
+                                    <h3>Recent Uploads</h3>
+                                </div>
+                                {% if recent_uploads %}
+                                    <ul class="upload-items">
+                                        {% for item in recent_uploads %}
+                                            <li class="upload-item">
+                                                <div class="upload-meta">
+                                                    <div class="upload-name">{{ item["display_name"] }}</div>
+                                                    <div class="upload-sub">Uploaded {{ item["uploaded_at_display"] }}</div>
+                                                </div>
+                                                <form action="{{ url_for('delete_upload', upload_id=item['id']) }}" method="POST">
+                                                    <button type="submit" class="ghost-btn">Remove</button>
+                                                </form>
+                                            </li>
+                                        {% endfor %}
+                                    </ul>
+                                {% else %}
+                                    <p class="upload-empty">No uploads yet.</p>
+                                {% endif %}
+                            </div>
+                            <div class="upload-list-section">
+                                <div class="upload-list-header">
+                                    <h3>All Uploads</h3>
+                                    <div class="upload-filter">
+                                        <label for="uploadYearFilter">Year</label>
+                                        <select id="uploadYearFilter">
+                                            <option value="all" selected>All years</option>
+                                            {% for group in upload_groups %}
+                                                <option value="{{ group['year'] }}">{{ group["year"] }}</option>
+                                            {% endfor %}
+                                        </select>
+                                    </div>
+                                </div>
+                                <p class="upload-help">Sorted by year and month detected from the filename.</p>
+                                {% if upload_groups %}
+                                    {% for group in upload_groups %}
+                                        <div class="upload-year-group" data-year="{{ group['year'] }}">
+                                            <div class="upload-year">{{ group["year"] }}</div>
+                                            <ul class="upload-items">
+                                                {% for item in group["items"] %}
+                                                    <li class="upload-item">
+                                                        <div class="upload-meta">
+                                                            <div class="upload-name">{{ item["display_name"] }}</div>
+                                                            <div class="upload-sub">Uploaded {{ item["uploaded_at_display"] }}</div>
+                                                        </div>
+                                                        <form action="{{ url_for('delete_upload', upload_id=item['id']) }}" method="POST">
+                                                            <button type="submit" class="ghost-btn">Remove</button>
+                                                        </form>
+                                                    </li>
+                                                {% endfor %}
+                                            </ul>
+                                        </div>
+                                    {% endfor %}
+                                {% else %}
+                                    <p class="upload-empty">No uploads yet.</p>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
                 </article>
             </div>
         </section>

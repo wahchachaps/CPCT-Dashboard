@@ -103,12 +103,27 @@
             if (!target) return;
             event.preventDefault();
             showSection(targetId);
+            if (window.history && window.history.replaceState) {
+                window.history.replaceState(null, "", `#${targetId}`);
+            } else {
+                window.location.hash = `#${targetId}`;
+            }
         });
     });
 
-    if (sectionCards.length > 0) {
-        showSection(sectionCards[0].id);
+    function showInitialSection() {
+        if (sectionCards.length === 0) return;
+        const hash = window.location.hash || "";
+        const targetId = hash.startsWith("#") ? hash.slice(1) : "";
+        const target = targetId && document.getElementById(targetId) ? targetId : sectionCards[0].id;
+        showSection(target);
     }
+
+    showInitialSection();
+
+    window.addEventListener("hashchange", function () {
+        showInitialSection();
+    });
 
     window.addEventListener("resize", function () {
         resizeDashboardCharts();
@@ -2135,6 +2150,734 @@
             });
         }
     }
+
+    function initUploadPanel() {
+        const uploadForm = document.querySelector(".upload-form");
+        if (!uploadForm) return;
+
+        const fileInput = uploadForm.querySelector("#uploadFiles");
+        const selectedList = document.getElementById("uploadSelectedList");
+        const selectedEmpty = document.getElementById("uploadSelectedEmpty");
+        const errorBox = document.getElementById("uploadError");
+        const submitButton = document.getElementById("uploadSubmit");
+        let selectedFiles = [];
+
+        function fileKey(file) {
+            return `${file.name}::${file.size}::${file.lastModified}`;
+        }
+
+        function syncInputFiles() {
+            if (!fileInput) return;
+            const dataTransfer = new DataTransfer();
+            selectedFiles.forEach(function (file) {
+                dataTransfer.items.add(file);
+            });
+            fileInput.files = dataTransfer.files;
+        }
+
+        function renderSelectedFiles() {
+            if (selectedList) {
+                selectedList.innerHTML = "";
+                selectedFiles.forEach(function (file) {
+                    const item = document.createElement("li");
+                    item.className = "upload-selected-item";
+
+                    const name = document.createElement("span");
+                    name.className = "upload-selected-name";
+                    name.textContent = file.name;
+
+                    const remove = document.createElement("button");
+                    remove.type = "button";
+                    remove.className = "upload-remove";
+                    remove.textContent = "x";
+                    remove.addEventListener("click", function () {
+                        selectedFiles = selectedFiles.filter(function (entry) {
+                            return fileKey(entry) !== fileKey(file);
+                        });
+                        renderSelectedFiles();
+                    });
+
+                    item.appendChild(name);
+                    item.appendChild(remove);
+                    selectedList.appendChild(item);
+                });
+            }
+
+            if (selectedEmpty) {
+                selectedEmpty.style.display = selectedFiles.length === 0 ? "block" : "none";
+            }
+
+            if (submitButton) {
+                submitButton.disabled = selectedFiles.length === 0;
+            }
+
+            if (errorBox && selectedFiles.length > 0) {
+                errorBox.textContent = "";
+                errorBox.classList.remove("is-visible");
+            }
+
+            syncInputFiles();
+        }
+
+        function mergeFiles(newFiles) {
+            const existingKeys = new Set(selectedFiles.map(fileKey));
+            newFiles.forEach(function (file) {
+                const key = fileKey(file);
+                if (existingKeys.has(key)) return;
+                existingKeys.add(key);
+                selectedFiles.push(file);
+            });
+            renderSelectedFiles();
+        }
+
+        if (fileInput) {
+            fileInput.addEventListener("change", function () {
+                const incoming = Array.from(fileInput.files || []);
+                mergeFiles(incoming);
+            });
+        }
+
+        uploadForm.addEventListener("submit", function (event) {
+            if (selectedFiles.length === 0) {
+                event.preventDefault();
+                if (errorBox) {
+                    errorBox.textContent = "Please select at least one file before uploading.";
+                    errorBox.classList.add("is-visible");
+                }
+            }
+        });
+
+        renderSelectedFiles();
+    }
+
+    function initUploadFilter() {
+        const filter = document.getElementById("uploadYearFilter");
+        if (!filter) return;
+        const groups = Array.from(document.querySelectorAll(".upload-year-group"));
+        filter.addEventListener("change", function () {
+            const value = filter.value;
+            groups.forEach(function (group) {
+                const year = group.getAttribute("data-year");
+                const visible = value === "all" || value === year;
+                group.style.display = visible ? "" : "none";
+            });
+        });
+    }
+
+    function initEddPurchasesChart() {
+        const select = document.getElementById("eddMonthSelect");
+        const canvas = document.getElementById("eddPurchasesChart");
+        const shareCanvas = document.getElementById("eddShareChart");
+        const status = document.getElementById("eddChartStatus");
+        const table = document.getElementById("eddTable");
+        const tableBody = table ? table.querySelector("tbody") : null;
+        const metricHeader = document.getElementById("eddMetricHeader");
+        if (!select || !canvas || !window.Chart) return;
+
+        let chart = null;
+        let shareChart = null;
+
+        function setStatus(message) {
+            if (!status) return;
+            status.textContent = message || "";
+            status.classList.toggle("is-visible", !!message);
+        }
+
+        function updateBarChart(payload) {
+            const labels = payload.labels || [];
+            const values = payload.values || [];
+            const metric = payload.metric || "Value";
+
+            if (chart) {
+                chart.data.labels = labels;
+                chart.data.datasets[0].label = metric;
+                chart.data.datasets[0].data = values;
+                chart.update();
+                return;
+            }
+
+            chart = registerChart(new Chart(canvas, {
+                type: "bar",
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: metric,
+                        data: values,
+                        backgroundColor: "#2563eb",
+                        borderRadius: 4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    layout: { padding: { top: 10, right: 12, bottom: 4, left: 6 } },
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: {
+                            ticks: {
+                                autoSkip: false,
+                                maxRotation: 45,
+                                minRotation: 0,
+                                padding: 6
+                            }
+                        },
+                        y: {
+                            beginAtZero: true,
+                            ticks: { callback: numberTick }
+                        }
+                    }
+                }
+            }));
+        }
+
+        function updateShareChart(payload) {
+            if (!shareCanvas) return;
+            const labels = payload.labels || [];
+            const values = payload.values || [];
+
+            const items = labels.map(function (label, index) {
+                return { label: label, value: Number(values[index]) || 0 };
+            }).filter(function (item) {
+                return item.value > 0;
+            });
+
+            if (items.length === 0) {
+                if (shareChart) {
+                    shareChart.destroy();
+                    shareChart = null;
+                }
+                return;
+            }
+
+            items.sort(function (a, b) { return b.value - a.value; });
+            const topCount = 6;
+            const topItems = items.slice(0, topCount);
+            const othersTotal = items.slice(topCount).reduce(function (sum, item) { return sum + item.value; }, 0);
+            if (othersTotal > 0) {
+                topItems.push({ label: "Others", value: othersTotal });
+            }
+
+            const shareLabels = topItems.map(function (item) { return item.label; });
+            const shareValues = topItems.map(function (item) { return item.value; });
+            const colors = ["#1d4ed8", "#0ea5e9", "#22c55e", "#f97316", "#facc15", "#a855f7", "#94a3b8"];
+
+            if (shareChart) {
+                shareChart.data.labels = shareLabels;
+                shareChart.data.datasets[0].data = shareValues;
+                shareChart.update();
+                return;
+            }
+
+            shareChart = registerChart(new Chart(shareCanvas, {
+                type: "doughnut",
+                data: {
+                    labels: shareLabels,
+                    datasets: [{
+                        data: shareValues,
+                        backgroundColor: shareLabels.map(function (_, index) {
+                            return colors[index % colors.length];
+                        }),
+                        borderWidth: 2,
+                        borderColor: "#ffffff"
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: "bottom",
+                            labels: {
+                                boxWidth: 12,
+                                boxHeight: 12,
+                                padding: 12
+                            }
+                        }
+                    }
+                }
+            }));
+        }
+
+        function updateTable(payload) {
+            if (!tableBody) return;
+            const labels = payload.labels || [];
+            const values = payload.values || [];
+            const metric = payload.metric || "Value";
+
+            if (metricHeader) {
+                metricHeader.textContent = metric;
+            }
+
+            tableBody.innerHTML = "";
+            labels.forEach(function (label, index) {
+                const row = document.createElement("tr");
+                const nameCell = document.createElement("td");
+                const valueCell = document.createElement("td");
+                nameCell.textContent = label;
+                const value = Number(values[index]);
+                valueCell.textContent = Number.isFinite(value) ? value.toLocaleString() : "-";
+                row.appendChild(nameCell);
+                row.appendChild(valueCell);
+                tableBody.appendChild(row);
+            });
+        }
+
+        function loadData(uploadId) {
+            if (!uploadId) {
+                setStatus("Upload a file to view this chart.");
+                return;
+            }
+            setStatus("");
+            fetch(`/api/edd-purchases/${uploadId}`)
+                .then(function (response) { return response.json(); })
+                .then(function (payload) {
+                    if (payload && payload.error) {
+                        setStatus(payload.error);
+                        return;
+                    }
+                    if (!payload || !payload.labels || payload.labels.length === 0) {
+                        setStatus("No usable data found in that file.");
+                        return;
+                    }
+                    updateBarChart(payload);
+                    updateShareChart(payload);
+                    updateTable(payload);
+                })
+                .catch(function () {
+                    setStatus("Unable to load chart data.");
+                });
+        }
+
+        select.addEventListener("change", function () {
+            loadData(select.value);
+        });
+
+        loadData(select.value);
+    }
+
+    function initHourlyUploadChart() {
+        const select = document.getElementById("hourlyYearSelect");
+        const canvas = document.getElementById("hourlyUploadChart");
+        const status = document.getElementById("hourlyChartStatus");
+        if (!select || !canvas || !window.Chart) return;
+
+        let chart = null;
+
+        function setStatus(message) {
+            if (!status) return;
+            status.textContent = message || "";
+            status.classList.toggle("is-visible", !!message);
+        }
+
+        function updateChart(payload) {
+            const labels = payload.labels || [];
+            const datasets = payload.datasets || [];
+            const metric = payload.metric || "Energy (kWh)";
+
+            const colors = ["#1d4ed8", "#0ea5e9", "#22c55e", "#f97316", "#facc15", "#a855f7", "#94a3b8"];
+            const chartDatasets = datasets.map(function (series, index) {
+                return {
+                    label: series.label,
+                    data: series.values || [],
+                    backgroundColor: colors[index % colors.length],
+                    borderRadius: 2
+                };
+            });
+
+            if (chart) {
+                chart.data.labels = labels;
+                chart.data.datasets = chartDatasets;
+                chart.options.plugins.legend.display = chartDatasets.length > 1;
+                chart.update();
+                return;
+            }
+
+            chart = registerChart(new Chart(canvas, {
+                type: "bar",
+                data: {
+                    labels: labels,
+                    datasets: chartDatasets
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    layout: { padding: { top: 10, right: 12, bottom: 4, left: 6 } },
+                    plugins: { legend: { display: chartDatasets.length > 1 } },
+                    scales: {
+                        x: {
+                            stacked: false,
+                            ticks: {
+                                autoSkip: true,
+                                maxTicksLimit: 12,
+                                padding: 6
+                            }
+                        },
+                        y: {
+                            beginAtZero: true,
+                            title: { display: true, text: metric },
+                            ticks: { callback: numberTick }
+                        }
+                    }
+                }
+            }));
+        }
+
+        function loadData(year) {
+            if (!year) {
+                setStatus("Upload a file to view this chart.");
+                return;
+            }
+            setStatus("");
+            fetch(`/api/edd-hourly-year/${year}`)
+                .then(function (response) { return response.json(); })
+                .then(function (payload) {
+                    if (payload && payload.error) {
+                        setStatus(payload.error);
+                        return;
+                    }
+                    if (!payload || !payload.labels || payload.labels.length === 0 || !payload.datasets || payload.datasets.length === 0) {
+                        setStatus("No usable data found for that year.");
+                        return;
+                    }
+                    updateChart(payload);
+                })
+                .catch(function () {
+                    setStatus("Unable to load chart data.");
+                });
+        }
+
+        select.addEventListener("change", function () {
+            loadData(select.value);
+        });
+
+        loadData(select.value);
+    }
+
+    function initHourlyDayChart() {
+        const monthSelect = document.getElementById("hourlyMonthSelect");
+        const daySelect = document.getElementById("hourlyDaySelect");
+        const canvas = document.getElementById("hourlyDayChart");
+        const status = document.getElementById("hourlyDayStatus");
+        if (!monthSelect || !daySelect || !canvas || !window.Chart) return;
+
+        let chart = null;
+        let monthItems = [];
+
+        function setStatus(message) {
+            if (!status) return;
+            status.textContent = message || "";
+            status.classList.toggle("is-visible", !!message);
+        }
+
+        function updateChart(payload) {
+            const labels = payload.labels || [];
+            const values = payload.values || [];
+            const metric = payload.metric || "Energy (kWh)";
+
+            if (chart) {
+                chart.data.labels = labels;
+                chart.data.datasets[0].label = metric;
+                chart.data.datasets[0].data = values;
+                chart.update();
+                return;
+            }
+
+            chart = registerChart(new Chart(canvas, {
+                type: "bar",
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: metric,
+                        data: values,
+                        backgroundColor: "#1d4ed8",
+                        borderRadius: 2
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    layout: { padding: { top: 10, right: 12, bottom: 4, left: 6 } },
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: {
+                            ticks: {
+                                autoSkip: true,
+                                maxTicksLimit: 12,
+                                padding: 6
+                            }
+                        },
+                        y: {
+                            beginAtZero: true,
+                            title: { display: true, text: metric },
+                            ticks: { callback: numberTick }
+                        }
+                    }
+                }
+            }));
+        }
+
+        function populateDays(days) {
+            daySelect.innerHTML = "";
+            if (!days || days.length === 0) {
+                const option = document.createElement("option");
+                option.value = "";
+                option.textContent = "No days available";
+                daySelect.appendChild(option);
+                daySelect.disabled = true;
+                return;
+            }
+
+            daySelect.disabled = false;
+            const allOption = document.createElement("option");
+            allOption.value = "all";
+            allOption.textContent = "All days (max)";
+            daySelect.appendChild(allOption);
+            days.forEach(function (day) {
+                const option = document.createElement("option");
+                option.value = String(day);
+                option.textContent = String(day);
+                daySelect.appendChild(option);
+            });
+        }
+
+        function parseMonthValue(value) {
+            const parts = String(value || "").split("|");
+            if (parts.length !== 3) {
+                return null;
+            }
+            return {
+                id: parts[0],
+                start: parts[1],
+                end: parts[2]
+            };
+        }
+
+        function loadDay(monthValue, day) {
+            const parsed = parseMonthValue(monthValue);
+            if (!parsed || !day) {
+                setStatus("Select a month and day (or All days) to view data.");
+                return;
+            }
+            setStatus("");
+            const endpoint = day === "all"
+                ? `/api/edd-hourly-month/${parsed.id}?start=${parsed.start}&end=${parsed.end}`
+                : `/api/edd-hourly-day/${parsed.id}?date=${day}`;
+            fetch(endpoint)
+                .then(function (response) { return response.json(); })
+                .then(function (payload) {
+                    if (payload && payload.error) {
+                        setStatus(payload.error);
+                        return;
+                    }
+                    if (!payload || !payload.labels || payload.labels.length === 0) {
+                        setStatus("No usable data found.");
+                        return;
+                    }
+                    updateChart(payload);
+                })
+                .catch(function () {
+                    setStatus("Unable to load chart data.");
+                });
+        }
+
+        function loadDays(monthValue) {
+            const parsed = parseMonthValue(monthValue);
+            if (!parsed) {
+                setStatus("Upload a file to view this chart.");
+                populateDays([]);
+                return;
+            }
+            setStatus("");
+            fetch(`/api/edd-hourly-days/${parsed.id}?start=${parsed.start}&end=${parsed.end}`)
+                .then(function (response) { return response.json(); })
+                .then(function (payload) {
+                    if (payload && payload.error) {
+                        setStatus(payload.error);
+                        populateDays([]);
+                        return;
+                    }
+                    const days = payload.dates || [];
+                    populateDays(days);
+                    if (days.length > 0) {
+                        loadDay(monthValue, "all");
+                    }
+                })
+                .catch(function () {
+                    setStatus("Unable to load available days.");
+                    populateDays([]);
+                });
+        }
+
+        monthSelect.addEventListener("change", function () {
+            loadDays(monthSelect.value);
+        });
+
+        daySelect.addEventListener("change", function () {
+            loadDay(monthSelect.value, daySelect.value);
+        });
+
+        function populateMonthOptions() {
+            monthSelect.innerHTML = "";
+            if (monthItems.length === 0) {
+                const option = document.createElement("option");
+                option.value = "";
+                option.textContent = "No months available";
+                monthSelect.appendChild(option);
+                monthSelect.disabled = true;
+                populateDays([]);
+                return;
+            }
+            monthSelect.disabled = false;
+            monthItems.sort(function (a, b) { return String(a.start).localeCompare(String(b.start)); });
+            monthItems.forEach(function (item) {
+                const option = document.createElement("option");
+                option.value = `${item.id}|${item.start}|${item.end}`;
+                option.textContent = item.label || item.start || "";
+                monthSelect.appendChild(option);
+            });
+            loadDays(monthSelect.value);
+        }
+
+        function populateMonths() {
+            monthSelect.innerHTML = "";
+            const loading = document.createElement("option");
+            loading.value = "";
+            loading.textContent = "Loading months...";
+            monthSelect.appendChild(loading);
+
+            fetch("/api/edd-hourly-months")
+                .then(function (response) { return response.json(); })
+                .then(function (payload) {
+                    const items = payload.items || [];
+                    monthItems = items;
+                    if (items.length === 0) {
+                        monthSelect.innerHTML = "";
+                        const option = document.createElement("option");
+                        option.value = "";
+                        option.textContent = "No uploads yet";
+                        monthSelect.appendChild(option);
+                        yearSelect.innerHTML = "";
+                        const yearOption = document.createElement("option");
+                        yearOption.value = "";
+                        yearOption.textContent = "No years available";
+                        yearSelect.appendChild(yearOption);
+                        yearSelect.disabled = true;
+                        monthSelect.disabled = true;
+                        populateDays([]);
+                        return;
+                    }
+                    populateMonthOptions();
+                })
+                .catch(function () {
+                    monthSelect.innerHTML = "";
+                    const option = document.createElement("option");
+                    option.value = "";
+                    option.textContent = "Unable to load months";
+                    monthSelect.appendChild(option);
+                    populateDays([]);
+                });
+        }
+
+        populateMonths();
+    }
+    function initPeakLoadChart() {
+        const select = document.getElementById("peakYearSelect");
+        const canvas = document.getElementById("peakLoadChart");
+        const status = document.getElementById("peakLoadStatus");
+        if (!select || !canvas || !window.Chart) return;
+
+        let chart = null;
+
+        function setStatus(message) {
+            if (!status) return;
+            status.textContent = message || "";
+            status.classList.toggle("is-visible", !!message);
+        }
+
+        function updateChart(payload) {
+            const labels = payload.labels || [];
+            const values = payload.values || [];
+            const metric = payload.metric || "Peak Load (kW)";
+
+            if (chart) {
+                chart.data.labels = labels;
+                chart.data.datasets[0].label = metric;
+                chart.data.datasets[0].data = values;
+                chart.update();
+                return;
+            }
+
+            chart = registerChart(new Chart(canvas, {
+                type: "bar",
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: metric,
+                        data: values,
+                        backgroundColor: "#0f172a",
+                        borderRadius: 2
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    layout: { padding: { top: 10, right: 12, bottom: 4, left: 6 } },
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: {
+                            ticks: {
+                                autoSkip: true,
+                                maxTicksLimit: 12,
+                                padding: 6
+                            }
+                        },
+                        y: {
+                            beginAtZero: true,
+                            title: { display: true, text: metric },
+                            ticks: { callback: numberTick }
+                        }
+                    }
+                }
+            }));
+        }
+
+        function loadData(year) {
+            if (!year) {
+                setStatus("Upload a file to view this chart.");
+                return;
+            }
+            setStatus("");
+            fetch(`/api/edd-peak-load-year/${year}`)
+                .then(function (response) { return response.json(); })
+                .then(function (payload) {
+                    if (payload && payload.error) {
+                        setStatus(payload.error);
+                        return;
+                    }
+                    if (!payload || !payload.labels || payload.labels.length === 0) {
+                        setStatus("No Peak Load data found for that year.");
+                        return;
+                    }
+                    updateChart(payload);
+                })
+                .catch(function () {
+                    setStatus("Unable to load chart data.");
+                });
+        }
+
+        select.addEventListener("change", function () {
+            loadData(select.value);
+        });
+
+        loadData(select.value);
+    }
+
+    initUploadPanel();
+    initUploadFilter();
+    initEddPurchasesChart();
+    initHourlyUploadChart();
+    initPeakLoadChart();
+    initHourlyDayChart();
 
     if (!mapElement) {
         initSvgOverlayMap();
