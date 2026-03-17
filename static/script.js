@@ -1528,8 +1528,19 @@
         });
 
         const mapContexts = [];
+        const mapPanels = Array.from(document.querySelectorAll(".map-panel"));
         let selectedLocationKey = null;
-        let currentBranch = branchSelect ? branchSelect.value : "3";
+        let currentBranch = branchSelect ? branchSelect.value : "1";
+
+        function syncMapPanelVisibility(branchKey) {
+            if (mapPanels.length === 0) return;
+            const showAll = !branchKey || branchKey === "all";
+            mapPanels.forEach(function (panel) {
+                const panelBranch = panel.getAttribute("data-branch");
+                const visible = showAll || !panelBranch || panelBranch === branchKey;
+                panel.classList.toggle("is-hidden", !visible);
+            });
+        }
 
         function getBranchLocations(branchKey) {
             if (!branchKey || branchKey === "all") {
@@ -1638,6 +1649,7 @@
 
         function applyBranch(branchKey) {
             currentBranch = branchKey;
+            syncMapPanelVisibility(branchKey);
             mapContexts.forEach(function (context) {
                 context.regions.forEach(function (region) {
                     const visible = branchKey === "all" || !region.dataset.branch || region.dataset.branch === branchKey;
