@@ -1,23 +1,46 @@
 import json
+import math
 import os
 import re
 import uuid
 from datetime import datetime, time
 from functools import lru_cache
+from io import BytesIO
 
 import pandas as pd
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify
-from flask_bcrypt import Bcrypt
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from supabase import Client
 from werkzeug.utils import secure_filename
 
-app = Flask(__name__)
-app.secret_key = "supersecretkey"
-
-bcrypt = Bcrypt(app)
-
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
-MANIFEST_PATH = os.path.join(UPLOAD_DIR, "manifest.json")
+ENV_PATH = os.path.join(BASE_DIR, ".env")
+
+if os.path.isfile(ENV_PATH):
+    try:
+        with open(ENV_PATH, "r", encoding="utf-8") as handle:
+            for raw in handle:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip().strip('"').strip("'")
+                if key and key not in os.environ:
+                    os.environ[key] = value
+    except OSError:
+        pass
+
+app = Flask(__name__)
+app.secret_key = os.environ.get("SECRET_KEY", "supersecretkey")
+if os.environ.get("SESSION_COOKIE_SECURE", "") == "1":
+    app.config["SESSION_COOKIE_SECURE"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip()
+SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 ALLOWED_EXTENSIONS = {".xlsx", ".xls", ".csv"}
 MONTH_ALIASES = [
     ("january", 1), ("jan", 1),
@@ -44,37 +67,170 @@ CATEGORY_OPTIONS = {
     "other": "Other"
 }
 
-users = {
-    "admin": bcrypt.generate_password_hash("admin").decode("utf-8")
-}
+_supabase_client = None
 
 
-def ensure_upload_storage():
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
-    if not os.path.exists(MANIFEST_PATH):
-        with open(MANIFEST_PATH, "w", encoding="utf-8") as handle:
-            json.dump([], handle)
+def supabase_enabled():
+    return bool(SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY)
 
 
-def load_manifest():
-    ensure_upload_storage()
+def get_request_token():
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.lower().startswith("bearer "):
+        token = auth_header[7:].strip()
+        if token:
+            return token
+    token = request.headers.get("X-Access-Token", "") or request.args.get("access_token", "")
+    token = token.strip()
+    return token or None
+
+
+def get_supabase() -> "Client":
+    global _supabase_client
+    if _supabase_client is None:
+        if not supabase_enabled():
+            raise RuntimeError("Supabase configuration missing. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.")
+        try:
+            from supabase import create_client
+        except ImportError as exc:
+            raise RuntimeError("Supabase client library is not installed.") from exc
+        _supabase_client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+    return _supabase_client
+
+
+def load_manifest(include_data=False):
+    if not supabase_enabled():
+        return []
+    columns = "*"
+    if not include_data:
+        columns = "id,original_name,stored_name,uploaded_at,year,month,category,uploaded_by"
     try:
-        with open(MANIFEST_PATH, "r", encoding="utf-8") as handle:
-            data = json.load(handle)
-            return data if isinstance(data, list) else []
-    except (OSError, json.JSONDecodeError):
+        response = get_supabase().table("uploads").select(columns).order("uploaded_at", desc=True).execute()
+        data = response.data if hasattr(response, "data") else response.get("data", [])
+        return data or []
+    except Exception:
         return []
 
 
-def save_manifest(entries):
-    ensure_upload_storage()
-    with open(MANIFEST_PATH, "w", encoding="utf-8") as handle:
-        json.dump(entries, handle, indent=2)
+def fetch_upload(upload_id):
+    if not supabase_enabled():
+        return None
+    try:
+        response = get_supabase().table("uploads").select("*").eq("id", upload_id).limit(1).execute()
+        data = response.data if hasattr(response, "data") else response.get("data", [])
+        return data[0] if data else None
+    except Exception:
+        return None
+
+
+def insert_upload(entry):
+    response = get_supabase().table("uploads").insert(entry).execute()
+    data = response.data if hasattr(response, "data") else response.get("data", [])
+    return data[0] if data else None
+
+
+def delete_upload_entry(upload_id):
+    get_supabase().table("uploads").delete().eq("id", upload_id).execute()
+
+
+def get_current_user():
+    if not supabase_enabled():
+        return None
+    session_token = session.get("access_token")
+    header_token = get_request_token()
+    token = session_token or header_token
+    if not token:
+        return None
+
+    def lookup_user(access_token):
+        response = get_supabase().auth.get_user(access_token)
+        if hasattr(response, "user"):
+            return response.user
+        if isinstance(response, dict):
+            return response.get("user")
+        return None
+
+    if session_token:
+        try:
+            user = lookup_user(session_token)
+            if user:
+                return user
+        except Exception:
+            session.pop("access_token", None)
+            session.pop("refresh_token", None)
+            session_token = None
+
+    if header_token and header_token != session_token:
+        try:
+            return lookup_user(header_token)
+        except Exception:
+            return None
+
+    return None
+
+
+def clear_session():
+    session.pop("access_token", None)
+    session.pop("refresh_token", None)
+    session.pop("user_email", None)
+    session.pop("user_id", None)
+
+
+def format_auth_error(exc):
+    if exc is None:
+        return "Invalid email or password"
+    message = ""
+    if hasattr(exc, "message"):
+        try:
+            message = str(exc.message)
+        except Exception:
+            message = ""
+    if not message:
+        if hasattr(exc, "args") and exc.args:
+            message = str(exc.args[0])
+        else:
+            message = str(exc)
+    if not message:
+        return "Invalid email or password"
+    lowered = message.lower()
+    if "invalid login credentials" in lowered:
+        return "Invalid email or password"
+    return message
+
+
+def wants_json_response():
+    if request.method == "DELETE":
+        return True
+    accept = request.headers.get("Accept", "")
+    if "application/json" in accept:
+        return True
+    requested_with = request.headers.get("X-Requested-With", "")
+    if requested_with.lower() in ("xmlhttprequest", "fetch"):
+        return True
+    if request.args.get("format") == "json":
+        return True
+    return False
 
 
 def allowed_file(filename):
     ext = os.path.splitext(filename)[1].lower()
     return ext in ALLOWED_EXTENSIONS
+
+
+def read_upload_payload(file_storage):
+    try:
+        return file_storage.read()
+    finally:
+        try:
+            file_storage.close()
+        except Exception:
+            pass
+        try:
+            stream = getattr(file_storage, "stream", None)
+            if stream and hasattr(stream, "close"):
+                stream.close()
+        except Exception:
+            pass
 
 
 def get_file_mtime(path):
@@ -211,6 +367,390 @@ def get_entry_category(entry):
     if category in CATEGORY_OPTIONS:
         return category
     return infer_category_from_name(entry.get("original_name", ""))
+
+
+def get_entry_data(entry):
+    raw = entry.get("data_json")
+    if not raw:
+        return {}
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+    if isinstance(raw, dict):
+        return raw
+    return {}
+
+
+def shift_hourly_series(values):
+    if not isinstance(values, list) or len(values) != 24:
+        return values
+    return values[1:] + values[:1]
+
+
+def shift_hourly_days(days_map):
+    if not isinstance(days_map, dict):
+        return days_map
+    shifted = {}
+    for key, series in days_map.items():
+        shifted[key] = shift_hourly_series(series)
+    return shifted
+
+
+def normalize_hourly_payload(entry):
+    data = get_entry_data(entry)
+    hourly = data.get("hourly") or {}
+    version = entry.get("data_version") or 1
+    if isinstance(version, str) and version.isdigit():
+        version = int(version)
+    if version >= 2:
+        return hourly
+
+    cp_payload = dict(hourly.get("cp") or {})
+    kw_payload = dict(hourly.get("kw") or {})
+
+    if "days" in cp_payload:
+        cp_payload["days"] = shift_hourly_days(cp_payload.get("days"))
+    if "month_max" in cp_payload:
+        cp_payload["month_max"] = shift_hourly_series(cp_payload.get("month_max"))
+    if "month_avg" in cp_payload:
+        cp_payload["month_avg"] = shift_hourly_series(cp_payload.get("month_avg"))
+
+    if "days" in kw_payload:
+        kw_payload["days"] = shift_hourly_days(kw_payload.get("days"))
+    if "month_max" in kw_payload:
+        kw_payload["month_max"] = shift_hourly_series(kw_payload.get("month_max"))
+
+    return {
+        "labels": hourly.get("labels") or build_hour_labels(),
+        "cp": cp_payload,
+        "kw": kw_payload
+    }
+
+
+def build_hour_labels():
+    return [format_hour_label(hour) for hour in range(24)]
+
+
+def build_days_from_hour_map(day_hour_map):
+    days = {}
+    for day, hour_map in day_hour_map.items():
+        series = []
+        for hour in range(24):
+            source_hour = (hour + 1) % 24
+            value = hour_map.get(source_hour, 0)
+            try:
+                series.append(float(value))
+            except (TypeError, ValueError):
+                series.append(0.0)
+        days[format_date_ymd(day)] = series
+    return days
+
+
+def compute_hourly_max(days_map):
+    if not days_map:
+        return []
+    max_values = []
+    for hour in range(24):
+        max_value = None
+        for series in days_map.values():
+            if not isinstance(series, list) or hour >= len(series):
+                continue
+            value = series[hour]
+            if isinstance(value, (int, float)):
+                max_value = value if max_value is None else max(max_value, value)
+        max_values.append(float(max_value or 0))
+    return max_values
+
+
+def compute_hourly_avg(days_map):
+    if not days_map:
+        return []
+    avg_values = []
+    for hour in range(24):
+        values = []
+        for series in days_map.values():
+            if not isinstance(series, list) or hour >= len(series):
+                continue
+            value = series[hour]
+            if isinstance(value, (int, float)):
+                values.append(value)
+        avg_values.append(float(sum(values) / len(values)) if values else 0.0)
+    return avg_values
+
+
+def filter_days_map(days_map, start_date=None, end_date=None):
+    if not start_date or not end_date:
+        return days_map
+    filtered = {}
+    for key, series in days_map.items():
+        day = parse_iso_date(key)
+        if not day:
+            continue
+        if start_date <= day <= end_date:
+            filtered[key] = series
+    return filtered
+
+
+def compute_cp_day_hour_sums(xl):
+    sheet = find_cp_sheet(xl.sheet_names)
+    if not sheet:
+        return None, "CP sheet not found."
+    df = xl.parse(sheet, header=None)
+    row_labels_idx = None
+    for i in range(len(df)):
+        row = df.iloc[i]
+        if any(isinstance(x, str) and "Row Labels" in x for x in row.tolist() if pd.notna(x)):
+            row_labels_idx = i
+            break
+    if row_labels_idx is None:
+        return None, "Unable to locate the CP data table."
+
+    header_row = df.iloc[row_labels_idx]
+    date_columns = []
+    for idx, val in enumerate(header_row.tolist()):
+        if idx == 0 or pd.isna(val):
+            continue
+        parsed = None
+        if isinstance(val, pd.Timestamp):
+            parsed = val
+        else:
+            try:
+                parsed = pd.to_datetime(val, errors="coerce")
+            except Exception:
+                parsed = None
+        if parsed is not None and pd.notna(parsed):
+            date_columns.append((idx, parsed.date()))
+
+    if not date_columns:
+        return None, "No matching dates found for that month."
+
+    day_hour_sum = {}
+    data_rows = df.iloc[row_labels_idx + 1:]
+    for _, row in data_rows.iterrows():
+        time_val = row.iloc[0]
+        hour, minute = parse_time_components(time_val)
+        bucket = bucket_end_hour(hour, minute)
+        if bucket is None:
+            continue
+        for col_idx, day in date_columns:
+            val = row.iloc[col_idx] if col_idx < len(row) else None
+            num = pd.to_numeric(val, errors="coerce")
+            if pd.notna(num):
+                day_map = day_hour_sum.setdefault(day, {})
+                day_map[bucket] = day_map.get(bucket, 0) + float(num)
+
+    return day_hour_sum, None
+
+
+def compute_cp_hourly_payload(xl):
+    day_hour_sum, error = compute_cp_day_hour_sums(xl)
+    if error:
+        return None, error
+    days = build_days_from_hour_map(day_hour_sum)
+    if not days:
+        return None, "No usable CP data found."
+    return {
+        "days": days,
+        "month_max": compute_hourly_max(days),
+        "month_avg": compute_hourly_avg(days)
+    }, None
+
+
+def compute_kw_hourly_payload(xl):
+    df, sheet, error = load_kw_sheet(xl)
+    if error:
+        return None, error
+
+    date_col, time_col, kw_col, col_error = get_kw_columns(df)
+    if col_error:
+        return None, col_error
+
+    date_series = pd.to_datetime(df[date_col], errors="coerce")
+    if not date_series.notna().any():
+        return None, "No usable data found for that month."
+
+    day_hour_max = {}
+    for idx, date_val in date_series.items():
+        if pd.isna(date_val):
+            continue
+        hour, minute = parse_time_components(df.at[idx, time_col])
+        bucket = bucket_end_hour(hour, minute)
+        if bucket is None:
+            continue
+        num = pd.to_numeric(df.at[idx, kw_col], errors="coerce")
+        if pd.isna(num):
+            continue
+        day = date_val.date()
+        day_map = day_hour_max.setdefault(day, {})
+        value = float(num)
+        current = day_map.get(bucket)
+        if current is None or value > current:
+            day_map[bucket] = value
+
+    days = build_days_from_hour_map(day_hour_max)
+    if not days:
+        return None, "No usable data found for that month."
+    return {
+        "days": days,
+        "month_max": compute_hourly_max(days)
+    }, None
+
+
+def extract_kwhr_purchase_from_xl(xl):
+    sheet = find_kwhr_purchase_sheet(xl.sheet_names)
+    if not sheet:
+        return None, "KWhr Purchase sheet not found."
+
+    df = xl.parse(sheet, header=None)
+    header_idx = None
+    for i in range(len(df)):
+        row = df.iloc[i]
+        values = [str(val).lower() for val in row.tolist() if pd.notna(val)]
+        if any("raw mq" in val for val in values) and any("total amq" in val for val in values):
+            header_idx = i
+            break
+    if header_idx is None:
+        return None, "Unable to locate the KWhr Purchase table."
+
+    header_row = df.iloc[header_idx].tolist()
+    columns = []
+    for idx, val in enumerate(header_row):
+        if pd.notna(val):
+            columns.append(str(val).strip())
+        elif idx == 0:
+            columns.append("Substation")
+        else:
+            columns.append(f"col_{idx}")
+
+    data = df.iloc[header_idx + 1:].copy()
+    data.columns = columns
+    if "Substation" not in data.columns:
+        data.insert(0, "Substation", df.iloc[header_idx + 1:, 0])
+
+    def is_valid_row(name):
+        text = str(name or "").strip().lower()
+        if not text:
+            return False
+        blocked = ("total", "previous", "increase", "contestable", "island")
+        return not text.startswith(blocked)
+
+    data = data[data["Substation"].apply(is_valid_row)]
+
+    metric_candidates = [
+        "TOTAL AMQ",
+        "NGCP  - Billing Determinant Energy (BDE)",
+        "Adjusted MQ",
+        "Raw MQ"
+    ]
+    metric_col = next((col for col in metric_candidates if col in data.columns), None)
+    if not metric_col:
+        return None, "No usable metric column found."
+
+    values = pd.to_numeric(data[metric_col], errors="coerce")
+    data = data[values.notna()]
+    values = values.loc[data.index]
+
+    labels = data["Substation"].astype(str).tolist()
+    series = [float(val) for val in values.tolist()]
+
+    return {
+        "labels": labels,
+        "values": series,
+        "metric": metric_col
+    }, None
+
+
+def extract_peak_load_from_xl(xl):
+    sheet = find_edd_sheet(xl.sheet_names)
+    if not sheet:
+        return None, "EDD sheet not found."
+
+    df = xl.parse(sheet, header=None)
+
+    header_idx = None
+    for i in range(len(df)):
+        row = df.iloc[i]
+        if any(isinstance(x, str) and "for the month" in x.lower() for x in row.tolist() if pd.notna(x)):
+            header_idx = i
+            break
+
+    month_col = None
+    if header_idx is not None:
+        for idx, val in enumerate(df.iloc[header_idx].tolist()):
+            if isinstance(val, str) and "for the month" in val.lower():
+                month_col = idx
+                break
+
+    peak_row = None
+    for i in range(len(df)):
+        row = df.iloc[i]
+        for val in row.tolist():
+            if isinstance(val, str) and "peak load" in val.lower():
+                peak_row = i
+                break
+        if peak_row is not None:
+            break
+
+    if peak_row is None:
+        return None, "Peak Load row not found."
+
+    row = df.iloc[peak_row].tolist()
+    if month_col is not None and month_col < len(row):
+        value = row[month_col]
+    else:
+        value = None
+        for val in row:
+            num = pd.to_numeric(val, errors="coerce")
+            if pd.notna(num):
+                value = num
+                break
+
+    if value is None or pd.isna(value):
+        return None, "Peak Load value not found."
+
+    return float(value), None
+
+
+def precompute_upload_data(file_bytes, filename, category):
+    ext = os.path.splitext(filename)[1].lower()
+    if ext == ".csv" and category in ("hourly", "edd"):
+        return None, "This chart requires an Excel file."
+    try:
+        xl = pd.ExcelFile(BytesIO(file_bytes))
+    except Exception:
+        return None, "Unable to read Excel file."
+
+    if category == "hourly":
+        labels = build_hour_labels()
+        cp_payload, cp_error = compute_cp_hourly_payload(xl)
+        if cp_error:
+            return None, cp_error
+        kw_payload, kw_error = compute_kw_hourly_payload(xl)
+        if kw_error:
+            return None, kw_error
+        return {
+            "hourly": {
+                "labels": labels,
+                "cp": cp_payload,
+                "kw": kw_payload
+            }
+        }, None
+
+    if category == "edd":
+        kwhr_payload, kwhr_error = extract_kwhr_purchase_from_xl(xl)
+        if kwhr_error:
+            return None, kwhr_error
+        peak_value, peak_error = extract_peak_load_from_xl(xl)
+        if peak_error:
+            return None, peak_error
+        return {
+            "edd_purchase": kwhr_payload,
+            "peak_load": peak_value
+        }, None
+
+    return {}, None
 
 
 def build_upload_months(entries, category=None):
@@ -377,7 +917,7 @@ def get_kw_columns(df):
     time_col = columns.get("TIME")
     kw_col = columns.get("KW_DEL")
     if not date_col or not time_col or not kw_col:
-        return None, None, None, "KW_DEL data columns not found."
+        return None, None, None, "KW_DEL data columns not found. Make sure the pivot table uses KW_DEL in the Values field."
     return date_col, time_col, kw_col, None
 
 
@@ -490,6 +1030,14 @@ def parse_time_components(value):
         except Exception:
             pass
     try:
+        num = float(value)
+        if math.isfinite(num):
+            frac = num % 1
+            total_minutes = int(round(frac * 24 * 60)) % (24 * 60)
+            return total_minutes // 60, total_minutes % 60
+    except (TypeError, ValueError):
+        pass
+    try:
         text = str(value).strip()
         if not text:
             return None, None
@@ -510,13 +1058,7 @@ def bucket_end_hour(hour, minute):
 
 
 def format_hour_label(hour):
-    if hour == 0:
-        return "12:00 AM"
-    if hour == 12:
-        return "12:00 PM"
-    if hour > 12:
-        return f"{hour - 12}:00 PM"
-    return f"{hour}:00 AM"
+    return f"{hour + 1}:00"
 
 
 def extract_cp_hourly_data(file_path, target_year=None, target_month=None):
@@ -884,31 +1426,52 @@ def extract_kw_available_days(file_path, start_date=None, end_date=None):
 
 
 def extract_kw_hourly_day_data(file_path, target_year, target_month, target_day):
-    date_series, time_series, kw_series, sheet, error = _load_kw_base(
-        file_path,
-        get_file_mtime(file_path),
-        target_year,
-        target_month
-    )
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext == ".csv":
+        return None, "Hourly Loading requires an Excel file."
+    try:
+        xl = pd.ExcelFile(file_path)
+    except Exception:
+        return None, "Unable to read Excel file."
+
+    df, sheet, error = load_kw_sheet(xl, target_year, target_month)
     if error:
         return None, error
 
+    date_col, time_col, kw_col, col_error = get_kw_columns(df)
+    if col_error:
+        return None, col_error
+
+    date_series = pd.to_datetime(df[date_col], errors="coerce")
     target_date = datetime(target_year, target_month, target_day).date()
-    mask = date_series.dt.date == target_date
+    mask = date_series.notna() & (date_series.dt.date == target_date)
     if not mask.any():
         return None, "Selected day not found in the file."
 
-    valid = mask & time_series.notna() & kw_series.notna()
-    if not valid.any():
+    day_hour_max = {}
+    for idx in df.index[mask]:
+        date_val = date_series.loc[idx]
+        if pd.isna(date_val):
+            continue
+        hour, minute = parse_time_components(df.at[idx, time_col])
+        bucket = bucket_end_hour(hour, minute)
+        if bucket is None:
+            continue
+        num = pd.to_numeric(df.at[idx, kw_col], errors="coerce")
+        if pd.isna(num):
+            continue
+        day_map = day_hour_max.setdefault(target_date, {})
+        value = float(num)
+        current = day_map.get(bucket)
+        if current is None or value > current:
+            day_map[bucket] = value
+
+    if not day_hour_max:
         return None, "No usable data found for that day."
 
-    hours = time_series.loc[valid].dt.hour
-    minutes = time_series.loc[valid].dt.minute
-    buckets = hours.where(minutes == 0, (hours + 1) % 24).astype(int)
-    sums = kw_series.loc[valid].groupby(buckets).sum()
-
+    days = build_days_from_hour_map(day_hour_max)
+    series = days.get(format_date_ymd(target_date), [])
     labels = [format_hour_label(hour) for hour in range(24)]
-    series = [float(sums.get(hour, 0)) for hour in range(24)]
 
     return {
         "labels": labels,
@@ -919,15 +1482,23 @@ def extract_kw_hourly_day_data(file_path, target_year, target_month, target_day)
 
 
 def extract_kw_hourly_month_max(file_path, target_year=None, target_month=None, start_date=None, end_date=None):
-    date_series, time_series, kw_series, sheet, error = _load_kw_base(
-        file_path,
-        get_file_mtime(file_path),
-        target_year,
-        target_month
-    )
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext == ".csv":
+        return None, "Hourly Loading requires an Excel file."
+    try:
+        xl = pd.ExcelFile(file_path)
+    except Exception:
+        return None, "Unable to read Excel file."
+
+    df, sheet, error = load_kw_sheet(xl, target_year, target_month)
     if error:
         return None, error
 
+    date_col, time_col, kw_col, col_error = get_kw_columns(df)
+    if col_error:
+        return None, col_error
+
+    date_series = pd.to_datetime(df[date_col], errors="coerce")
     if start_date and end_date:
         mask = date_series.notna() & (date_series.dt.date >= start_date) & (date_series.dt.date <= end_date)
     elif target_year and target_month:
@@ -938,25 +1509,31 @@ def extract_kw_hourly_month_max(file_path, target_year=None, target_month=None, 
     if not mask.any():
         return None, "No matching dates found for that month."
 
-    valid = mask & time_series.notna() & kw_series.notna()
-    if not valid.any():
+    day_hour_max = {}
+    for idx in df.index[mask]:
+        date_val = date_series.loc[idx]
+        if pd.isna(date_val):
+            continue
+        hour, minute = parse_time_components(df.at[idx, time_col])
+        bucket = bucket_end_hour(hour, minute)
+        if bucket is None:
+            continue
+        num = pd.to_numeric(df.at[idx, kw_col], errors="coerce")
+        if pd.isna(num):
+            continue
+        day = date_val.date()
+        day_map = day_hour_max.setdefault(day, {})
+        value = float(num)
+        current = day_map.get(bucket)
+        if current is None or value > current:
+            day_map[bucket] = value
+
+    if not day_hour_max:
         return None, "No usable data found for that month."
 
-    hours = time_series.loc[valid].dt.hour
-    minutes = time_series.loc[valid].dt.minute
-    buckets = hours.where(minutes == 0, (hours + 1) % 24).astype(int)
-    day_values = date_series.loc[valid].dt.date
-
-    grouped = pd.DataFrame({
-        "day": day_values,
-        "bucket": buckets,
-        "value": kw_series.loc[valid]
-    }).groupby(["day", "bucket"])["value"].sum()
-
-    max_by_bucket = grouped.groupby("bucket").max()
-
+    days = build_days_from_hour_map(day_hour_max)
+    values = compute_hourly_max(days)
     labels = [format_hour_label(hour) for hour in range(24)]
-    values = [float(max_by_bucket.get(hour, 0)) for hour in range(24)]
 
     return {
         "labels": labels,
@@ -1046,14 +1623,9 @@ def build_peak_load_year_payload(entries, year):
     values = [None] * 12
     for month in sorted(month_entries.keys()):
         entry = month_entries[month]
-        stored = entry.get("stored_name")
-        if not stored:
-            continue
-        file_path = os.path.join(UPLOAD_DIR, stored)
-        if not os.path.exists(file_path):
-            continue
-        peak_value, error = extract_peak_load(file_path)
-        if error:
+        data = get_entry_data(entry)
+        peak_value = data.get("peak_load")
+        if peak_value is None:
             continue
         if 1 <= month <= 12:
             values[month - 1] = peak_value
@@ -1090,20 +1662,16 @@ def build_hourly_year_payload(entries, year):
     labels = None
     for month in sorted(month_entries.keys()):
         entry = month_entries[month]
-        stored = entry.get("stored_name")
-        if not stored:
-            continue
-        file_path = os.path.join(UPLOAD_DIR, stored)
-        if not os.path.exists(file_path):
-            continue
-        payload, error = extract_cp_hourly_data(file_path, target_year=year, target_month=month)
-        if error or not payload:
+        hourly = normalize_hourly_payload(entry)
+        cp_payload = hourly.get("cp") or {}
+        month_avg = cp_payload.get("month_avg")
+        if not month_avg:
             continue
         if labels is None:
-            labels = payload.get("labels", [])
+            labels = build_hour_labels()
         datasets.append({
             "label": MONTH_NAMES[month - 1],
-            "values": payload.get("values", [])
+            "values": month_avg
         })
 
     if not datasets or not labels:
@@ -1117,6 +1685,66 @@ def build_hourly_year_payload(entries, year):
     }
 
 
+def build_kw_annual_payload(entries, year, peak_type="highest"):
+    month_entries = {}
+    for entry in entries:
+        if get_entry_category(entry) != "hourly":
+            continue
+        entry_year = entry.get("year")
+        entry_month = entry.get("month")
+        if not entry_year or not entry_month:
+            parsed_year, parsed_month = parse_year_month(entry.get("original_name", ""))
+            entry_year = entry_year or parsed_year
+            entry_month = entry_month or parsed_month
+        if entry_year != year or not entry_month:
+            continue
+        existing = month_entries.get(entry_month)
+        if not existing or entry.get("uploaded_at", "") > existing.get("uploaded_at", ""):
+            month_entries[entry_month] = entry
+
+    values = [None] * 12
+    normalized_peak = (peak_type or "highest").strip().lower()
+    if normalized_peak not in ("lowest", "highest"):
+        normalized_peak = "highest"
+
+    for month in sorted(month_entries.keys()):
+        entry = month_entries[month]
+        hourly = normalize_hourly_payload(entry)
+        kw_payload = hourly.get("kw") or {}
+        month_max = kw_payload.get("month_max") or []
+        numeric = [val for val in month_max if isinstance(val, (int, float))]
+        if not numeric:
+            continue
+        peak_value = min(numeric) if normalized_peak == "lowest" else max(numeric)
+        if 1 <= month <= 12:
+            values[month - 1] = peak_value
+
+    if all(value is None for value in values):
+        return None
+
+    return {
+        "labels": MONTH_NAMES[:],
+        "values": values,
+        "metric": "Load (kW)",
+        "year": year,
+        "peak": normalized_peak
+    }
+
+
+def build_year_options(entries, category=None):
+    years = set()
+    for entry in entries:
+        if category and get_entry_category(entry) != category:
+            continue
+        entry_year = entry.get("year")
+        if not entry_year:
+            parsed_year, _ = parse_year_month(entry.get("original_name", ""))
+            entry_year = parsed_year
+        if entry_year:
+            years.add(int(entry_year))
+    return sorted(years, reverse=True)
+
+
 @app.route("/")
 def index():
     return redirect(url_for("login"))
@@ -1124,25 +1752,37 @@ def index():
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
-    if "user" in session:
+    if get_current_user():
         return redirect(url_for("dashboard"))
 
+    error = None
     if request.method == "POST":
-        username = request.form.get("username", "").strip()
+        email = request.form.get("username", "").strip()
         password = request.form.get("password", "")
+        if not email or not password:
+            error = "Email and password are required."
+        elif not supabase_enabled():
+            error = "Supabase is not configured."
+        else:
+            try:
+                result = get_supabase().auth.sign_in_with_password({
+                    "email": email,
+                    "password": password
+                })
+                session["access_token"] = result.session.access_token
+                session["refresh_token"] = result.session.refresh_token
+                session["user_email"] = result.user.email
+                session["user_id"] = result.user.id
+                return redirect(url_for("dashboard"))
+            except Exception as exc:
+                error = format_auth_error(exc)
 
-        if username in users and bcrypt.check_password_hash(users[username], password):
-            session["user"] = username
-            return redirect(url_for("dashboard"))
-
-        return render_template("login.html", error="Invalid username or password")
-
-    return render_template("login.html", error=None)
+    return render_template("login.html", error=error)
 
 
 @app.route("/dashboard")
 def dashboard():
-    if "user" not in session:
+    if not get_current_user():
         return redirect(url_for("login"))
 
     uploads = load_manifest()
@@ -1153,7 +1793,7 @@ def dashboard():
     upload_error = request.args.get("upload_error", "")
     return render_template(
         "dashboard.html",
-        username=session["user"],
+        username=session.get("user_email", ""),
         upload_groups=upload_groups,
         recent_uploads=recent_uploads,
         upload_months=upload_months,
@@ -1164,114 +1804,22 @@ def dashboard():
 
 @app.route("/upload", methods=["POST"])
 def upload_file():
-    if "user" not in session:
+    user = get_current_user()
+    if not user:
+        if wants_json_response():
+            return jsonify({"error": "Unauthorized"}), 401
         return redirect(url_for("login"))
+    if not supabase_enabled():
+        if wants_json_response():
+            return jsonify({"error": "Supabase is not configured."}), 500
+        return redirect(url_for("dashboard", upload_error="supabase") + "#section-uploads")
 
     files = request.files.getlist("uploadFiles")
     if not files:
+        if wants_json_response():
+            return jsonify({"error": "No files uploaded."}), 400
         return redirect(url_for("dashboard") + "#section-uploads")
 
-    entries = load_manifest()
-    selected_category = request.form.get("uploadCategory", "other").strip().lower()
-    if selected_category not in CATEGORY_OPTIONS:
-        selected_category = "other"
-
-    for file in files:
-        if not file or not file.filename:
-            continue
-        original_name = file.filename.strip()
-        if not allowed_file(original_name):
-            continue
-        safe_name = secure_filename(original_name)
-        if not safe_name:
-            continue
-
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        unique_id = uuid.uuid4().hex[:8]
-        stored_name = f"{timestamp}_{unique_id}_{safe_name}"
-        file_path = os.path.join(UPLOAD_DIR, stored_name)
-        file.save(file_path)
-
-        year, month = parse_year_month(original_name)
-        entries.append({
-            "id": uuid.uuid4().hex,
-            "original_name": original_name,
-            "stored_name": stored_name,
-            "uploaded_at": datetime.now().isoformat(timespec="seconds"),
-            "year": year,
-            "month": month,
-            "category": selected_category
-        })
-
-    save_manifest(entries)
-    return redirect(url_for("dashboard") + "#section-uploads")
-
-
-@app.route("/upload/delete/<upload_id>", methods=["POST"])
-def delete_upload(upload_id):
-    if "user" not in session:
-        return redirect(url_for("login"))
-
-    entries = load_manifest()
-    remaining = []
-    had_error = False
-    for entry in entries:
-        if entry.get("id") == upload_id:
-            stored = entry.get("stored_name")
-            if stored:
-                path = os.path.join(UPLOAD_DIR, stored)
-                if os.path.exists(path):
-                    try:
-                        os.remove(path)
-                    except PermissionError:
-                        had_error = True
-            continue
-        remaining.append(entry)
-
-    save_manifest(remaining)
-    if had_error:
-        return redirect(url_for("dashboard", upload_error="in_use") + "#section-uploads")
-    return redirect(url_for("dashboard") + "#section-uploads")
-
-
-@app.route("/api/login", methods=["POST"])
-def api_login():
-    data = request.get_json(silent=True) or request.form
-    username = str(data.get("username", "")).strip()
-    password = str(data.get("password", ""))
-    if not username or not password:
-        return jsonify({"error": "Username and password are required."}), 400
-    if username in users and bcrypt.check_password_hash(users[username], password):
-        session["user"] = username
-        return jsonify({"ok": True, "username": username})
-    return jsonify({"error": "Invalid username or password."}), 401
-
-
-@app.route("/api/logout", methods=["POST"])
-def api_logout():
-    session.pop("user", None)
-    return jsonify({"ok": True})
-
-
-@app.route("/api/bootstrap")
-def api_bootstrap():
-    if "user" not in session:
-        return jsonify({"error": "Unauthorized"}), 401
-    payload = build_bootstrap_payload()
-    payload["username"] = session.get("user", "")
-    return jsonify(payload)
-
-
-@app.route("/api/upload", methods=["POST"])
-def api_upload():
-    if "user" not in session:
-        return jsonify({"error": "Unauthorized"}), 401
-
-    files = request.files.getlist("uploadFiles")
-    if not files:
-        return jsonify({"error": "No files uploaded."}), 400
-
-    entries = load_manifest()
     selected_category = request.form.get("uploadCategory", "other").strip().lower()
     if selected_category not in CATEGORY_OPTIONS:
         selected_category = "other"
@@ -1290,28 +1838,198 @@ def api_upload():
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         unique_id = uuid.uuid4().hex[:8]
         stored_name = f"{timestamp}_{unique_id}_{safe_name}"
-        file_path = os.path.join(UPLOAD_DIR, stored_name)
-        try:
-            file.save(file_path)
-        except PermissionError:
-            return jsonify({"error": "File is currently locked or in use."}), 409
+        payload = read_upload_payload(file)
+        data_json, data_error = precompute_upload_data(payload, original_name, selected_category)
+        if data_error:
+            if wants_json_response():
+                return jsonify({"error": data_error}), 400
+            return redirect(url_for("dashboard", upload_error="processing") + "#section-uploads")
 
         year, month = parse_year_month(original_name)
-        entries.append({
-            "id": uuid.uuid4().hex,
+        insert_upload({
+            "id": str(uuid.uuid4()),
             "original_name": original_name,
             "stored_name": stored_name,
             "uploaded_at": datetime.now().isoformat(timespec="seconds"),
             "year": year,
             "month": month,
-            "category": selected_category
+            "category": selected_category,
+            "uploaded_by": getattr(user, "id", None),
+            "data_json": data_json,
+            "data_version": 2
+        })
+        added += 1
+
+    if added == 0:
+        if wants_json_response():
+            return jsonify({"error": "No valid files were uploaded."}), 400
+        return redirect(url_for("dashboard", upload_error="no_files") + "#section-uploads")
+    if wants_json_response():
+        payload = build_bootstrap_payload()
+        payload["uploaded"] = added
+        return jsonify(payload)
+    return redirect(url_for("dashboard") + "#section-uploads")
+
+
+@app.route("/upload/delete/<upload_id>", methods=["POST"])
+def delete_upload(upload_id):
+    if not get_current_user():
+        return redirect(url_for("login"))
+
+    entry = fetch_upload(upload_id)
+    if not entry:
+        return redirect(url_for("dashboard") + "#section-uploads")
+    delete_upload_entry(upload_id)
+    return redirect(url_for("dashboard") + "#section-uploads")
+
+
+@app.route("/delete/<upload_id>", methods=["DELETE", "POST"])
+def delete_upload_api(upload_id):
+    if not get_current_user():
+        if wants_json_response():
+            return jsonify({"error": "Unauthorized"}), 401
+        return redirect(url_for("login"))
+
+    entry = fetch_upload(upload_id)
+    if not entry:
+        if wants_json_response():
+            return jsonify({"error": "File not found."}), 404
+        return redirect(url_for("dashboard") + "#section-uploads")
+
+    delete_upload_entry(upload_id)
+    if wants_json_response():
+        return jsonify({"ok": True})
+    return redirect(url_for("dashboard") + "#section-uploads")
+
+
+@app.route("/api/login", methods=["POST"])
+def api_login():
+    data = request.get_json(silent=True) or request.form
+    email = str(data.get("username", "")).strip()
+    password = str(data.get("password", ""))
+    if not email or not password:
+        return jsonify({"error": "Email and password are required."}), 400
+    if not supabase_enabled():
+        return jsonify({"error": "Supabase is not configured."}), 500
+    try:
+        result = get_supabase().auth.sign_in_with_password({
+            "email": email,
+            "password": password
+        })
+        session["access_token"] = result.session.access_token
+        session["refresh_token"] = result.session.refresh_token
+        session["user_email"] = result.user.email
+        session["user_id"] = result.user.id
+        return jsonify({
+            "ok": True,
+            "username": result.user.email,
+            "access_token": result.session.access_token,
+            "refresh_token": result.session.refresh_token
+        })
+    except Exception as exc:
+        return jsonify({"error": format_auth_error(exc)}), 401
+
+
+@app.route("/api/logout", methods=["POST"])
+def api_logout():
+    clear_session()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/bootstrap")
+def api_bootstrap():
+    if not get_current_user():
+        return jsonify({"error": "Unauthorized"}), 401
+    payload = build_bootstrap_payload()
+    payload["username"] = session.get("user_email", "")
+    return jsonify(payload)
+
+
+@app.route("/data")
+def data_endpoint():
+    if not get_current_user():
+        return jsonify({"error": "Unauthorized"}), 401
+
+    entries_meta = load_manifest()
+    entries_full = load_manifest(include_data=True)
+
+    items = []
+    for entry in entries_full:
+        items.append({
+            "id": entry.get("id"),
+            "name": entry.get("original_name") or entry.get("stored_name") or "",
+            "original_name": entry.get("original_name") or "",
+            "created_at": entry.get("uploaded_at") or "",
+            "uploaded_at": entry.get("uploaded_at") or "",
+            "year": entry.get("year"),
+            "month": entry.get("month"),
+            "category": entry.get("category"),
+            "json_data": get_entry_data(entry)
+        })
+
+    payload = {
+        "items": items,
+        "upload_groups": build_upload_groups(entries_meta),
+        "recent_uploads": build_recent_uploads(entries_meta),
+        "upload_months": build_upload_months(entries_meta),
+        "upload_months_hourly": build_upload_months(entries_meta, category="hourly")
+    }
+    payload["username"] = session.get("user_email", "")
+    return jsonify(payload)
+
+
+@app.route("/api/upload", methods=["POST"])
+def api_upload():
+    user = get_current_user()
+    if not user:
+        return jsonify({"error": "Unauthorized"}), 401
+    if not supabase_enabled():
+        return jsonify({"error": "Supabase is not configured."}), 500
+
+    files = request.files.getlist("uploadFiles")
+    if not files:
+        return jsonify({"error": "No files uploaded."}), 400
+
+    selected_category = request.form.get("uploadCategory", "other").strip().lower()
+    if selected_category not in CATEGORY_OPTIONS:
+        selected_category = "other"
+
+    added = 0
+    for file in files:
+        if not file or not file.filename:
+            continue
+        original_name = file.filename.strip()
+        if not allowed_file(original_name):
+            continue
+        safe_name = secure_filename(original_name)
+        if not safe_name:
+            continue
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        unique_id = uuid.uuid4().hex[:8]
+        stored_name = f"{timestamp}_{unique_id}_{safe_name}"
+        payload = read_upload_payload(file)
+        data_json, data_error = precompute_upload_data(payload, original_name, selected_category)
+        if data_error:
+            return jsonify({"error": data_error}), 400
+
+        year, month = parse_year_month(original_name)
+        insert_upload({
+            "id": str(uuid.uuid4()),
+            "original_name": original_name,
+            "stored_name": stored_name,
+            "uploaded_at": datetime.now().isoformat(timespec="seconds"),
+            "year": year,
+            "month": month,
+            "category": selected_category,
+            "uploaded_by": getattr(user, "id", None),
+            "data_json": data_json,
+            "data_version": 2
         })
         added += 1
 
     if added == 0:
         return jsonify({"error": "No valid files were uploaded."}), 400
-
-    save_manifest(entries)
     payload = build_bootstrap_payload()
     payload["uploaded"] = added
     return jsonify(payload)
@@ -1319,28 +2037,12 @@ def api_upload():
 
 @app.route("/api/upload/delete/<upload_id>", methods=["POST"])
 def api_delete_upload(upload_id):
-    if "user" not in session:
+    if not get_current_user():
         return jsonify({"error": "Unauthorized"}), 401
-
-    entries = load_manifest()
-    remaining = []
-    had_error = False
-    for entry in entries:
-        if entry.get("id") == upload_id:
-            stored = entry.get("stored_name")
-            if stored:
-                path = os.path.join(UPLOAD_DIR, stored)
-                if os.path.exists(path):
-                    try:
-                        os.remove(path)
-                    except PermissionError:
-                        had_error = True
-            continue
-        remaining.append(entry)
-
-    save_manifest(remaining)
-    if had_error:
-        return jsonify({"error": "File is currently locked or in use."}), 409
+    entry = fetch_upload(upload_id)
+    if not entry:
+        return jsonify({"error": "File not found."}), 404
+    delete_upload_entry(upload_id)
 
     payload = build_bootstrap_payload()
     return jsonify(payload)
@@ -1348,66 +2050,52 @@ def api_delete_upload(upload_id):
 
 @app.route("/api/edd-purchases/<upload_id>")
 def edd_purchases(upload_id):
-    if "user" not in session:
+    if not get_current_user():
         return jsonify({"error": "Unauthorized"}), 401
 
-    entries = load_manifest()
-    entry = next((item for item in entries if item.get("id") == upload_id), None)
+    entry = fetch_upload(upload_id)
     if not entry:
         return jsonify({"error": "File not found"}), 404
 
-    stored = entry.get("stored_name")
-    if not stored:
-        return jsonify({"error": "File not available"}), 404
+    data = get_entry_data(entry)
+    payload = data.get("edd_purchase")
+    if not payload:
+        return jsonify({"error": "No purchase data found."}), 400
 
-    file_path = os.path.join(UPLOAD_DIR, stored)
-    if not os.path.exists(file_path):
-        return jsonify({"error": "File missing on disk"}), 404
-
-    payload, error = extract_kwhr_purchase_data(file_path)
-    if error:
-        return jsonify({"error": error}), 400
-
-    payload["label"] = entry.get("original_name", "")
-    return jsonify(payload)
+    response = dict(payload)
+    response["label"] = entry.get("original_name", "")
+    return jsonify(response)
 
 
 @app.route("/api/edd-hourly/<upload_id>")
 def edd_hourly(upload_id):
-    if "user" not in session:
+    if not get_current_user():
         return jsonify({"error": "Unauthorized"}), 401
 
-    entries = load_manifest()
-    entry = next((item for item in entries if item.get("id") == upload_id), None)
+    entry = fetch_upload(upload_id)
     if not entry:
         return jsonify({"error": "File not found"}), 404
 
-    stored = entry.get("stored_name")
-    if not stored:
-        return jsonify({"error": "File not available"}), 404
+    hourly = normalize_hourly_payload(entry)
+    cp_payload = hourly.get("cp") or {}
+    values = cp_payload.get("month_avg")
+    if not values:
+        return jsonify({"error": "No hourly data found."}), 400
 
-    file_path = os.path.join(UPLOAD_DIR, stored)
-    if not os.path.exists(file_path):
-        return jsonify({"error": "File missing on disk"}), 404
-
-    payload, error = extract_cp_hourly_data(
-        file_path,
-        target_year=entry.get("year"),
-        target_month=entry.get("month")
-    )
-    if error:
-        return jsonify({"error": error}), 400
-
-    payload["label"] = entry.get("original_name", "")
-    return jsonify(payload)
+    return jsonify({
+        "labels": build_hour_labels(),
+        "values": values,
+        "metric": "Energy (kWh)",
+        "label": entry.get("original_name", "")
+    })
 
 
 @app.route("/api/edd-hourly-year/<int:year>")
 def edd_hourly_year(year):
-    if "user" not in session:
+    if not get_current_user():
         return jsonify({"error": "Unauthorized"}), 401
 
-    entries = load_manifest()
+    entries = load_manifest(include_data=True)
     payload = build_hourly_year_payload(entries, year)
     if not payload:
         return jsonify({"error": "No hourly data found for that year."}), 400
@@ -1415,33 +2103,53 @@ def edd_hourly_year(year):
     return jsonify(payload)
 
 
-@app.route("/api/edd-hourly-days/<upload_id>")
-def edd_hourly_days(upload_id):
-    if "user" not in session:
+@app.route("/api/edd-hourly-kw-years")
+def edd_hourly_kw_years():
+    if not get_current_user():
+        return jsonify({"error": "Unauthorized"}), 401
+    entries = load_manifest()
+    years = build_year_options(entries, category="hourly")
+    return jsonify({"years": years})
+
+
+@app.route("/api/edd-hourly-kw-annual/<int:year>")
+def edd_hourly_kw_annual(year):
+    if not get_current_user():
         return jsonify({"error": "Unauthorized"}), 401
 
-    entries = load_manifest()
-    entry = next((item for item in entries if item.get("id") == upload_id), None)
+    entries = load_manifest(include_data=True)
+    peak_type = request.args.get("peak", "highest")
+    payload = build_kw_annual_payload(entries, year, peak_type)
+    if not payload:
+        return jsonify({"error": "No hourly kW data found for that year."}), 400
+
+    return jsonify(payload)
+
+
+@app.route("/api/edd-hourly-days/<upload_id>")
+def edd_hourly_days(upload_id):
+    if not get_current_user():
+        return jsonify({"error": "Unauthorized"}), 401
+
+    entry = fetch_upload(upload_id)
     if not entry:
         return jsonify({"error": "File not found"}), 404
 
-    stored = entry.get("stored_name")
-    if not stored:
-        return jsonify({"error": "File not available"}), 404
-
-    file_path = os.path.join(UPLOAD_DIR, stored)
-    if not os.path.exists(file_path):
-        return jsonify({"error": "File missing on disk"}), 404
-
     start_date = parse_iso_date(request.args.get("start"))
     end_date = parse_iso_date(request.args.get("end"))
+    hourly = normalize_hourly_payload(entry)
+    cp_payload = hourly.get("cp") or {}
+    days_map = cp_payload.get("days") or {}
+    if not days_map:
+        return jsonify({"error": "No cached data found for this file. Please re-upload it."}), 400
 
-    days, error = extract_cp_available_days(file_path, start_date, end_date)
-    if error:
-        return jsonify({"error": error}), 400
+    filtered = filter_days_map(days_map, start_date, end_date)
+    dates = sorted(filtered.keys())
+    if not dates:
+        return jsonify({"error": "No matching dates found."}), 400
 
     return jsonify({
-        "dates": days,
+        "dates": dates,
         "start": format_date_ymd(start_date) if start_date else "",
         "end": format_date_ymd(end_date) if end_date else ""
     })
@@ -1449,21 +2157,12 @@ def edd_hourly_days(upload_id):
 
 @app.route("/api/edd-hourly-day/<upload_id>/<int:day>")
 def edd_hourly_day(upload_id, day):
-    if "user" not in session:
+    if not get_current_user():
         return jsonify({"error": "Unauthorized"}), 401
 
-    entries = load_manifest()
-    entry = next((item for item in entries if item.get("id") == upload_id), None)
+    entry = fetch_upload(upload_id)
     if not entry:
         return jsonify({"error": "File not found"}), 404
-
-    stored = entry.get("stored_name")
-    if not stored:
-        return jsonify({"error": "File not available"}), 404
-
-    file_path = os.path.join(UPLOAD_DIR, stored)
-    if not os.path.exists(file_path):
-        return jsonify({"error": "File missing on disk"}), 404
 
     query_year = request.args.get("year")
     query_month = request.args.get("month")
@@ -1476,68 +2175,63 @@ def edd_hourly_day(upload_id, day):
 
     if not entry_year or not entry_month:
         return jsonify({"error": "Unable to detect month for this file."}), 400
+    hourly = normalize_hourly_payload(entry)
+    cp_payload = hourly.get("cp") or {}
+    days_map = cp_payload.get("days") or {}
+    if not days_map:
+        return jsonify({"error": "No cached data found for this file. Please re-upload it."}), 400
+    date_key = f"{entry_year:04d}-{entry_month:02d}-{day:02d}"
+    values = days_map.get(date_key)
+    if not values:
+        return jsonify({"error": "Selected day not found in the file."}), 400
 
-    payload, error = extract_cp_hourly_day_data(file_path, entry_year, entry_month, day)
-    if error:
-        return jsonify({"error": error}), 400
-
-    payload["label"] = entry.get("original_name", "")
-    return jsonify(payload)
+    return jsonify({
+        "labels": build_hour_labels(),
+        "values": values,
+        "metric": "Energy (kWh)",
+        "label": entry.get("original_name", "")
+    })
 
 
 @app.route("/api/edd-hourly-day/<upload_id>")
 def edd_hourly_day_by_date(upload_id):
-    if "user" not in session:
+    if not get_current_user():
         return jsonify({"error": "Unauthorized"}), 401
 
-    entries = load_manifest()
-    entry = next((item for item in entries if item.get("id") == upload_id), None)
+    entry = fetch_upload(upload_id)
     if not entry:
         return jsonify({"error": "File not found"}), 404
-
-    stored = entry.get("stored_name")
-    if not stored:
-        return jsonify({"error": "File not available"}), 404
-
-    file_path = os.path.join(UPLOAD_DIR, stored)
-    if not os.path.exists(file_path):
-        return jsonify({"error": "File missing on disk"}), 404
 
     date_str = request.args.get("date")
     target_date = parse_iso_date(date_str)
     if not target_date:
         return jsonify({"error": "Date is required in YYYY-MM-DD format."}), 400
+    hourly = normalize_hourly_payload(entry)
+    cp_payload = hourly.get("cp") or {}
+    days_map = cp_payload.get("days") or {}
+    if not days_map:
+        return jsonify({"error": "No cached data found for this file. Please re-upload it."}), 400
+    date_key = format_date_ymd(target_date)
+    values = days_map.get(date_key)
+    if not values:
+        return jsonify({"error": "Selected day not found in the file."}), 400
 
-    payload, error = extract_cp_hourly_day_data(
-        file_path,
-        target_date.year,
-        target_date.month,
-        target_date.day
-    )
-    if error:
-        return jsonify({"error": error}), 400
-
-    payload["label"] = entry.get("original_name", "")
-    return jsonify(payload)
+    return jsonify({
+        "labels": build_hour_labels(),
+        "values": values,
+        "metric": "Energy (kWh)",
+        "label": entry.get("original_name", "")
+    })
 
 
 @app.route("/api/edd-hourly-month/<upload_id>")
 def edd_hourly_month(upload_id):
-    if "user" not in session:
+    if not get_current_user():
         return jsonify({"error": "Unauthorized"}), 401
 
-    entries = load_manifest()
-    entry = next((item for item in entries if item.get("id") == upload_id), None)
+    entry = fetch_upload(upload_id)
     if not entry:
         return jsonify({"error": "File not found"}), 404
-
-    stored = entry.get("stored_name")
-    if not stored:
-        return jsonify({"error": "File not available"}), 404
-
-    file_path = os.path.join(UPLOAD_DIR, stored)
-    if not os.path.exists(file_path):
-        return jsonify({"error": "File missing on disk"}), 404
 
     start_date = parse_iso_date(request.args.get("start"))
     end_date = parse_iso_date(request.args.get("end"))
@@ -1546,40 +2240,46 @@ def edd_hourly_month(upload_id):
     entry_year = int(query_year) if query_year and query_year.isdigit() else None
     entry_month = int(query_month) if query_month and query_month.isdigit() else None
 
-    if start_date and end_date:
-        payload, error = extract_cp_hourly_month_max(file_path, start_date=start_date, end_date=end_date)
-    else:
-        if not entry_year or not entry_month:
-            return jsonify({"error": "Year and month are required."}), 400
-        payload, error = extract_cp_hourly_month_max(file_path, entry_year, entry_month)
-    if error:
-        return jsonify({"error": error}), 400
+    hourly = normalize_hourly_payload(entry)
+    cp_payload = hourly.get("cp") or {}
+    days_map = cp_payload.get("days") or {}
+    if not days_map:
+        return jsonify({"error": "No cached data found for this file. Please re-upload it."}), 400
 
-    payload["label"] = entry.get("original_name", "")
-    return jsonify(payload)
+    filtered = filter_days_map(days_map, start_date, end_date) if start_date and end_date else days_map
+    values = cp_payload.get("month_max") if not (start_date and end_date) else compute_hourly_max(filtered)
+    if not values:
+        return jsonify({"error": "No usable data found for that month."}), 400
+
+    return jsonify({
+        "labels": build_hour_labels(),
+        "values": values,
+        "metric": "Energy (kWh)",
+        "label": entry.get("original_name", "")
+    })
 
 
 @app.route("/api/edd-hourly-months")
 def edd_hourly_months():
-    if "user" not in session:
+    if not get_current_user():
         return jsonify({"error": "Unauthorized"}), 401
 
-    entries = load_manifest()
+    entries = load_manifest(include_data=True)
     items = []
     for entry in entries:
         if get_entry_category(entry) != "hourly":
             continue
-        stored = entry.get("stored_name")
-        if not stored:
+        hourly = normalize_hourly_payload(entry)
+        cp_payload = hourly.get("cp") or {}
+        days_map = cp_payload.get("days") or {}
+        if not days_map:
             continue
-        file_path = os.path.join(UPLOAD_DIR, stored)
-        if not os.path.exists(file_path):
+        date_values = [parse_iso_date(key) for key in days_map.keys()]
+        date_values = [val for val in date_values if val]
+        if not date_values:
             continue
-        dates, error = extract_cp_available_dates(file_path)
-        if error or not dates:
-            continue
-        start_date = min(dates)
-        end_date = max(dates)
+        start_date = min(date_values)
+        end_date = max(date_values)
         items.append({
             "id": entry.get("id"),
             "year": end_date.year,
@@ -1596,25 +2296,25 @@ def edd_hourly_months():
 
 @app.route("/api/edd-hourly-kw-months")
 def edd_hourly_kw_months():
-    if "user" not in session:
+    if not get_current_user():
         return jsonify({"error": "Unauthorized"}), 401
 
-    entries = load_manifest()
+    entries = load_manifest(include_data=True)
     items = []
     for entry in entries:
         if get_entry_category(entry) != "hourly":
             continue
-        stored = entry.get("stored_name")
-        if not stored:
+        hourly = normalize_hourly_payload(entry)
+        kw_payload = hourly.get("kw") or {}
+        days_map = kw_payload.get("days") or {}
+        if not days_map:
             continue
-        file_path = os.path.join(UPLOAD_DIR, stored)
-        if not os.path.exists(file_path):
+        date_values = [parse_iso_date(key) for key in days_map.keys()]
+        date_values = [val for val in date_values if val]
+        if not date_values:
             continue
-        dates, error = extract_kw_available_dates(file_path)
-        if error or not dates:
-            continue
-        start_date = min(dates)
-        end_date = max(dates)
+        start_date = min(date_values)
+        end_date = max(date_values)
         items.append({
             "id": entry.get("id"),
             "year": end_date.year,
@@ -1631,31 +2331,27 @@ def edd_hourly_kw_months():
 
 @app.route("/api/edd-hourly-kw-days/<upload_id>")
 def edd_hourly_kw_days(upload_id):
-    if "user" not in session:
+    if not get_current_user():
         return jsonify({"error": "Unauthorized"}), 401
 
-    entries = load_manifest()
-    entry = next((item for item in entries if item.get("id") == upload_id), None)
+    entry = fetch_upload(upload_id)
     if not entry:
         return jsonify({"error": "File not found"}), 404
 
-    stored = entry.get("stored_name")
-    if not stored:
-        return jsonify({"error": "File not available"}), 404
-
-    file_path = os.path.join(UPLOAD_DIR, stored)
-    if not os.path.exists(file_path):
-        return jsonify({"error": "File missing on disk"}), 404
-
     start_date = parse_iso_date(request.args.get("start"))
     end_date = parse_iso_date(request.args.get("end"))
-
-    days, error = extract_kw_available_days(file_path, start_date, end_date)
-    if error:
-        return jsonify({"error": error}), 400
+    hourly = normalize_hourly_payload(entry)
+    kw_payload = hourly.get("kw") or {}
+    days_map = kw_payload.get("days") or {}
+    if not days_map:
+        return jsonify({"error": "No cached data found for this file. Please re-upload it."}), 400
+    filtered = filter_days_map(days_map, start_date, end_date)
+    dates = sorted(filtered.keys())
+    if not dates:
+        return jsonify({"error": "No matching dates found."}), 400
 
     return jsonify({
-        "dates": days,
+        "dates": dates,
         "start": format_date_ymd(start_date) if start_date else "",
         "end": format_date_ymd(end_date) if end_date else ""
     })
@@ -1663,21 +2359,12 @@ def edd_hourly_kw_days(upload_id):
 
 @app.route("/api/edd-hourly-kw-day/<upload_id>/<int:day>")
 def edd_hourly_kw_day(upload_id, day):
-    if "user" not in session:
+    if not get_current_user():
         return jsonify({"error": "Unauthorized"}), 401
 
-    entries = load_manifest()
-    entry = next((item for item in entries if item.get("id") == upload_id), None)
+    entry = fetch_upload(upload_id)
     if not entry:
         return jsonify({"error": "File not found"}), 404
-
-    stored = entry.get("stored_name")
-    if not stored:
-        return jsonify({"error": "File not available"}), 404
-
-    file_path = os.path.join(UPLOAD_DIR, stored)
-    if not os.path.exists(file_path):
-        return jsonify({"error": "File missing on disk"}), 404
 
     query_year = request.args.get("year")
     query_month = request.args.get("month")
@@ -1690,68 +2377,63 @@ def edd_hourly_kw_day(upload_id, day):
 
     if not entry_year or not entry_month:
         return jsonify({"error": "Unable to detect month for this file."}), 400
+    hourly = normalize_hourly_payload(entry)
+    kw_payload = hourly.get("kw") or {}
+    days_map = kw_payload.get("days") or {}
+    if not days_map:
+        return jsonify({"error": "No cached data found for this file. Please re-upload it."}), 400
+    date_key = f"{entry_year:04d}-{entry_month:02d}-{day:02d}"
+    values = days_map.get(date_key)
+    if not values:
+        return jsonify({"error": "Selected day not found in the file."}), 400
 
-    payload, error = extract_kw_hourly_day_data(file_path, entry_year, entry_month, day)
-    if error:
-        return jsonify({"error": error}), 400
-
-    payload["label"] = entry.get("original_name", "")
-    return jsonify(payload)
+    return jsonify({
+        "labels": build_hour_labels(),
+        "values": values,
+        "metric": "Load (kW)",
+        "label": entry.get("original_name", "")
+    })
 
 
 @app.route("/api/edd-hourly-kw-day/<upload_id>")
 def edd_hourly_kw_day_by_date(upload_id):
-    if "user" not in session:
+    if not get_current_user():
         return jsonify({"error": "Unauthorized"}), 401
 
-    entries = load_manifest()
-    entry = next((item for item in entries if item.get("id") == upload_id), None)
+    entry = fetch_upload(upload_id)
     if not entry:
         return jsonify({"error": "File not found"}), 404
-
-    stored = entry.get("stored_name")
-    if not stored:
-        return jsonify({"error": "File not available"}), 404
-
-    file_path = os.path.join(UPLOAD_DIR, stored)
-    if not os.path.exists(file_path):
-        return jsonify({"error": "File missing on disk"}), 404
 
     date_str = request.args.get("date")
     target_date = parse_iso_date(date_str)
     if not target_date:
         return jsonify({"error": "Date is required in YYYY-MM-DD format."}), 400
+    hourly = normalize_hourly_payload(entry)
+    kw_payload = hourly.get("kw") or {}
+    days_map = kw_payload.get("days") or {}
+    if not days_map:
+        return jsonify({"error": "No cached data found for this file. Please re-upload it."}), 400
+    date_key = format_date_ymd(target_date)
+    values = days_map.get(date_key)
+    if not values:
+        return jsonify({"error": "Selected day not found in the file."}), 400
 
-    payload, error = extract_kw_hourly_day_data(
-        file_path,
-        target_date.year,
-        target_date.month,
-        target_date.day
-    )
-    if error:
-        return jsonify({"error": error}), 400
-
-    payload["label"] = entry.get("original_name", "")
-    return jsonify(payload)
+    return jsonify({
+        "labels": build_hour_labels(),
+        "values": values,
+        "metric": "Load (kW)",
+        "label": entry.get("original_name", "")
+    })
 
 
 @app.route("/api/edd-hourly-kw-month/<upload_id>")
 def edd_hourly_kw_month(upload_id):
-    if "user" not in session:
+    if not get_current_user():
         return jsonify({"error": "Unauthorized"}), 401
 
-    entries = load_manifest()
-    entry = next((item for item in entries if item.get("id") == upload_id), None)
+    entry = fetch_upload(upload_id)
     if not entry:
         return jsonify({"error": "File not found"}), 404
-
-    stored = entry.get("stored_name")
-    if not stored:
-        return jsonify({"error": "File not available"}), 404
-
-    file_path = os.path.join(UPLOAD_DIR, stored)
-    if not os.path.exists(file_path):
-        return jsonify({"error": "File missing on disk"}), 404
 
     start_date = parse_iso_date(request.args.get("start"))
     end_date = parse_iso_date(request.args.get("end"))
@@ -1760,25 +2442,31 @@ def edd_hourly_kw_month(upload_id):
     entry_year = int(query_year) if query_year and query_year.isdigit() else None
     entry_month = int(query_month) if query_month and query_month.isdigit() else None
 
-    if start_date and end_date:
-        payload, error = extract_kw_hourly_month_max(file_path, start_date=start_date, end_date=end_date)
-    else:
-        if not entry_year or not entry_month:
-            return jsonify({"error": "Year and month are required."}), 400
-        payload, error = extract_kw_hourly_month_max(file_path, entry_year, entry_month)
-    if error:
-        return jsonify({"error": error}), 400
+    hourly = normalize_hourly_payload(entry)
+    kw_payload = hourly.get("kw") or {}
+    days_map = kw_payload.get("days") or {}
+    if not days_map:
+        return jsonify({"error": "No cached data found for this file. Please re-upload it."}), 400
 
-    payload["label"] = entry.get("original_name", "")
-    return jsonify(payload)
+    filtered = filter_days_map(days_map, start_date, end_date) if start_date and end_date else days_map
+    values = kw_payload.get("month_max") if not (start_date and end_date) else compute_hourly_max(filtered)
+    if not values:
+        return jsonify({"error": "No usable data found for that month."}), 400
+
+    return jsonify({
+        "labels": build_hour_labels(),
+        "values": values,
+        "metric": "Load (kW)",
+        "label": entry.get("original_name", "")
+    })
 
 
 @app.route("/api/edd-peak-load-year/<int:year>")
 def edd_peak_load_year(year):
-    if "user" not in session:
+    if not get_current_user():
         return jsonify({"error": "Unauthorized"}), 401
 
-    entries = load_manifest()
+    entries = load_manifest(include_data=True)
     payload = build_peak_load_year_payload(entries, year)
     if not payload:
         return jsonify({"error": "No Peak Load data found for that year."}), 400
@@ -1788,7 +2476,7 @@ def edd_peak_load_year(year):
 
 @app.route("/logout")
 def logout():
-    session.pop("user", None)
+    clear_session()
     return redirect(url_for("login"))
 
 

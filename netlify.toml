@@ -9,6 +9,24 @@
   force = true
 
 [[redirects]]
+  from = "/upload"
+  to = "https://cpct-dashboard.onrender.com/upload"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/data"
+  to = "https://cpct-dashboard.onrender.com/data"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/delete/*"
+  to = "https://cpct-dashboard.onrender.com/delete/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
   from = "/*"
   to = "/index.html"
   status = 200

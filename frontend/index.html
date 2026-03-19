@@ -137,7 +137,7 @@
                         <div class="uploaded-data-head">
                             <div>
                                 <h3>Hourly Loading (kW)</h3>
-                                <p class="upload-help">Hourly demand summed from 5-minute kW values for the selected day. Choose All days to show the maximum hourly total across the month.</p>
+                                <p class="upload-help">Hourly demand taken as the maximum 5-minute kW value per hour for the selected day. Choose All days to show the maximum hourly demand across the month.</p>
                             </div>
                             <div class="upload-filter">
                                 <label for="hourlyKwMonthSelect">Month</label>
@@ -152,6 +152,29 @@
                         </div>
                         <div class="upload-chart-status" id="hourlyKwStatus"></div>
                         <canvas id="hourlyKwChart"></canvas>
+                    </div>
+                    <div class="graph-card peak-load-card">
+                        <div class="uploaded-data-head">
+                            <div>
+                                <h3>ANNUAL SYSTEM DEMAND (kW)</h3>
+                                <p class="upload-help">Monthly peak demand for the selected year.</p>
+                            </div>
+                            <div class="upload-filter">
+                                <label for="annualKwYearSelect">Year</label>
+                                <select id="annualKwYearSelect">
+                                    <option value="">Loading years...</option>
+                                </select>
+                            </div>
+                            <div class="upload-filter">
+                                <label for="annualKwPeakSelect">Peak</label>
+                                <select id="annualKwPeakSelect">
+                                    <option value="highest">Highest Peak</option>
+                                    <option value="lowest">Lowest Peak</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="upload-chart-status" id="annualKwStatus"></div>
+                        <canvas id="annualKwChart"></canvas>
                     </div>
                     <div class="graph-card peak-load-card">
                         <div class="uploaded-data-head">

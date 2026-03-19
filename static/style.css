@@ -1043,6 +1043,35 @@ input {
     margin-bottom: 16px;
 }
 
+.peak-badges {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.8rem;
+    color: #475569;
+}
+
+.peak-label {
+    font-weight: 600;
+}
+
+.peak-badge {
+    padding: 4px 8px;
+    border-radius: 999px;
+    background: #e2e8f0;
+    font-weight: 600;
+}
+
+.peak-badge.peak-low {
+    background: #dbeafe;
+    color: #1d4ed8;
+}
+
+.peak-badge.peak-high {
+    background: #ffedd5;
+    color: #c2410c;
+}
+
 .hourly-day-card {
     margin-bottom: 16px;
 }

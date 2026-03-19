@@ -137,7 +137,7 @@
                         <div class="uploaded-data-head">
                             <div>
                                 <h3>Hourly Loading (kW)</h3>
-                                <p class="upload-help">Hourly demand summed from 5-minute kW values for the selected day. Choose All days to show the maximum hourly total across the month.</p>
+                                <p class="upload-help">Hourly demand taken as the maximum 5-minute kW value per hour for the selected day. Choose All days to show the maximum hourly demand across the month.</p>
                             </div>
                             <div class="upload-filter">
                                 <label for="hourlyKwMonthSelect">Month</label>
@@ -152,6 +152,29 @@
                         </div>
                         <div class="upload-chart-status" id="hourlyKwStatus"></div>
                         <canvas id="hourlyKwChart"></canvas>
+                    </div>
+                    <div class="graph-card peak-load-card">
+                        <div class="uploaded-data-head">
+                            <div>
+                                <h3>ANNUAL SYSTEM DEMAND (kW)</h3>
+                                <p class="upload-help">Monthly peak demand for the selected year.</p>
+                            </div>
+                            <div class="upload-filter">
+                                <label for="annualKwYearSelect">Year</label>
+                                <select id="annualKwYearSelect">
+                                    <option value="">Loading years...</option>
+                                </select>
+                            </div>
+                            <div class="upload-filter">
+                                <label for="annualKwPeakSelect">Peak</label>
+                                <select id="annualKwPeakSelect">
+                                    <option value="highest">Highest Peak</option>
+                                    <option value="lowest">Lowest Peak</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="upload-chart-status" id="annualKwStatus"></div>
+                        <canvas id="annualKwChart"></canvas>
                     </div>
                     <div class="graph-card peak-load-card">
                         <div class="uploaded-data-head">
@@ -376,23 +399,8 @@
                                 <div class="upload-list-header">
                                     <h3>Recent Uploads</h3>
                                 </div>
-                                {% if recent_uploads %}
-                                    <ul class="upload-items">
-                                        {% for item in recent_uploads %}
-                                            <li class="upload-item">
-                                                <div class="upload-meta">
-                                                    <div class="upload-name">{{ item["display_name"] }}</div>
-                                                    <div class="upload-sub">Uploaded {{ item["uploaded_at_display"] }}</div>
-                                                </div>
-                                                <form action="{{ url_for('delete_upload', upload_id=item['id']) }}" method="POST">
-                                                    <button type="submit" class="ghost-btn">Remove</button>
-                                                </form>
-                                            </li>
-                                        {% endfor %}
-                                    </ul>
-                                {% else %}
-                                    <p class="upload-empty">No uploads yet.</p>
-                                {% endif %}
+                                <ul class="upload-items" id="recentUploadsList"></ul>
+                                <p class="upload-empty" id="recentUploadsEmpty">No uploads yet.</p>
                             </div>
                             <div class="upload-list-section">
                                 <div class="upload-list-header">
@@ -401,35 +409,12 @@
                                         <label for="uploadYearFilter">Year</label>
                                         <select id="uploadYearFilter">
                                             <option value="all" selected>All years</option>
-                                            {% for group in upload_groups %}
-                                                <option value="{{ group['year'] }}">{{ group["year"] }}</option>
-                                            {% endfor %}
                                         </select>
                                     </div>
                                 </div>
                                 <p class="upload-help">Sorted by year and month detected from the filename.</p>
-                                {% if upload_groups %}
-                                    {% for group in upload_groups %}
-                                        <div class="upload-year-group" data-year="{{ group['year'] }}">
-                                            <div class="upload-year">{{ group["year"] }}</div>
-                                            <ul class="upload-items">
-                                                {% for item in group["items"] %}
-                                                    <li class="upload-item">
-                                                        <div class="upload-meta">
-                                                            <div class="upload-name">{{ item["display_name"] }}</div>
-                                                            <div class="upload-sub">Uploaded {{ item["uploaded_at_display"] }}</div>
-                                                        </div>
-                                                        <form action="{{ url_for('delete_upload', upload_id=item['id']) }}" method="POST">
-                                                            <button type="submit" class="ghost-btn">Remove</button>
-                                                        </form>
-                                                    </li>
-                                                {% endfor %}
-                                            </ul>
-                                        </div>
-                                    {% endfor %}
-                                {% else %}
-                                    <p class="upload-empty">No uploads yet.</p>
-                                {% endif %}
+                                <div id="allUploadsContainer"></div>
+                                <p class="upload-empty" id="allUploadsEmpty">No uploads yet.</p>
                             </div>
                         </div>
                     </div>
