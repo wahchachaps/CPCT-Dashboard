@@ -187,6 +187,16 @@ def build_recent_uploads(entries, limit=6):
     return enriched[:limit]
 
 
+def build_bootstrap_payload():
+    uploads = load_manifest()
+    return {
+        "upload_groups": build_upload_groups(uploads),
+        "recent_uploads": build_recent_uploads(uploads),
+        "upload_months": build_upload_months(uploads),
+        "upload_months_hourly": build_upload_months(uploads, category="hourly")
+    }
+
+
 def infer_category_from_name(name):
     lowered = str(name or "").lower()
     if "edd" in lowered:
@@ -1222,6 +1232,118 @@ def delete_upload(upload_id):
     if had_error:
         return redirect(url_for("dashboard", upload_error="in_use") + "#section-uploads")
     return redirect(url_for("dashboard") + "#section-uploads")
+
+
+@app.route("/api/login", methods=["POST"])
+def api_login():
+    data = request.get_json(silent=True) or request.form
+    username = str(data.get("username", "")).strip()
+    password = str(data.get("password", ""))
+    if not username or not password:
+        return jsonify({"error": "Username and password are required."}), 400
+    if username in users and bcrypt.check_password_hash(users[username], password):
+        session["user"] = username
+        return jsonify({"ok": True, "username": username})
+    return jsonify({"error": "Invalid username or password."}), 401
+
+
+@app.route("/api/logout", methods=["POST"])
+def api_logout():
+    session.pop("user", None)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/bootstrap")
+def api_bootstrap():
+    if "user" not in session:
+        return jsonify({"error": "Unauthorized"}), 401
+    payload = build_bootstrap_payload()
+    payload["username"] = session.get("user", "")
+    return jsonify(payload)
+
+
+@app.route("/api/upload", methods=["POST"])
+def api_upload():
+    if "user" not in session:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    files = request.files.getlist("uploadFiles")
+    if not files:
+        return jsonify({"error": "No files uploaded."}), 400
+
+    entries = load_manifest()
+    selected_category = request.form.get("uploadCategory", "other").strip().lower()
+    if selected_category not in CATEGORY_OPTIONS:
+        selected_category = "other"
+
+    added = 0
+    for file in files:
+        if not file or not file.filename:
+            continue
+        original_name = file.filename.strip()
+        if not allowed_file(original_name):
+            continue
+        safe_name = secure_filename(original_name)
+        if not safe_name:
+            continue
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        unique_id = uuid.uuid4().hex[:8]
+        stored_name = f"{timestamp}_{unique_id}_{safe_name}"
+        file_path = os.path.join(UPLOAD_DIR, stored_name)
+        try:
+            file.save(file_path)
+        except PermissionError:
+            return jsonify({"error": "File is currently locked or in use."}), 409
+
+        year, month = parse_year_month(original_name)
+        entries.append({
+            "id": uuid.uuid4().hex,
+            "original_name": original_name,
+            "stored_name": stored_name,
+            "uploaded_at": datetime.now().isoformat(timespec="seconds"),
+            "year": year,
+            "month": month,
+            "category": selected_category
+        })
+        added += 1
+
+    if added == 0:
+        return jsonify({"error": "No valid files were uploaded."}), 400
+
+    save_manifest(entries)
+    payload = build_bootstrap_payload()
+    payload["uploaded"] = added
+    return jsonify(payload)
+
+
+@app.route("/api/upload/delete/<upload_id>", methods=["POST"])
+def api_delete_upload(upload_id):
+    if "user" not in session:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    entries = load_manifest()
+    remaining = []
+    had_error = False
+    for entry in entries:
+        if entry.get("id") == upload_id:
+            stored = entry.get("stored_name")
+            if stored:
+                path = os.path.join(UPLOAD_DIR, stored)
+                if os.path.exists(path):
+                    try:
+                        os.remove(path)
+                    except PermissionError:
+                        had_error = True
+            continue
+        remaining.append(entry)
+
+    save_manifest(remaining)
+    if had_error:
+        return jsonify({"error": "File is currently locked or in use."}), 409
+
+    payload = build_bootstrap_payload()
+    return jsonify(payload)
 
 
 @app.route("/api/edd-purchases/<upload_id>")

@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login | CPCT</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="login-page" data-static="true">
+    <div class="login-container">
+        <div class="login-box">
+            <img src="/static/imgs/aleco.png" class="logo" alt="ALECO logo">
+            <h2>Welcome Back</h2>
+            <h3>CPCT Login Portal</h3>
+
+            <form id="loginForm" action="#" method="POST">
+                <div class="input-group">
+                    <label for="username">Username</label>
+                    <input id="username" type="text" name="username" required placeholder="Enter your username">
+                </div>
+
+                <div class="input-group">
+                    <label for="password">Password</label>
+                    <input id="password" type="password" name="password" required placeholder="Enter your password">
+                </div>
+
+                <button type="submit" class="login-btn">Login</button>
+            </form>
+
+            <p class="error-text" id="loginError" aria-live="polite"></p>
+        </div>
+    </div>
+    <script src="/static/script.js"></script>
+</body>
+</html>

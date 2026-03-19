@@ -1,0 +1,392 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard | CPCT</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="dashboard-page" data-static="true">
+    <div class="dashboard-shell" id="dashboardShell">
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-head">
+                <div class="sidebar-identity">
+                    <img src="/static/imgs/aleco.png" alt="ALECO logo">
+                    <div class="sidebar-brand">
+                        <span class="brand-title">CPCT Panel</span>
+                        <span class="brand-subtitle">Operations View</span>
+                    </div>
+                </div>
+            </div>
+            <nav class="sidebar-nav">
+                <a href="#section-overview" class="nav-link">
+                    <span class="nav-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" focusable="false">
+                            <path d="M3 10.5L12 3l9 7.5" />
+                            <path d="M5.25 9.5V20h13.5V9.5" />
+                        </svg>
+                    </span>
+                    <span class="nav-text">Overview</span>
+                </a>
+                <a href="#section-energy" class="nav-link">
+                    <span class="nav-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" focusable="false">
+                            <path d="M4.5 19.5h15" />
+                            <path d="M7.5 16V11.5" />
+                            <path d="M12 16V8" />
+                            <path d="M16.5 16V5" />
+                        </svg>
+                    </span>
+                    <span class="nav-text">Energy Load</span>
+                </a>
+                <a href="#section-outages" class="nav-link">
+                    <span class="nav-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" focusable="false">
+                            <path d="M8 3v3" />
+                            <path d="M16 3v3" />
+                            <rect x="4" y="6" width="16" height="14" rx="2" ry="2" />
+                            <path d="M4 10.5h16" />
+                        </svg>
+                    </span>
+                    <span class="nav-text">Planning</span>
+                </a>
+                <a href="#section-map" class="nav-link">
+                    <span class="nav-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" focusable="false">
+                            <path d="M12 21s6-5.25 6-11a6 6 0 10-12 0c0 5.75 6 11 6 11z" />
+                            <circle cx="12" cy="10" r="2.25" />
+                        </svg>
+                    </span>
+                    <span class="nav-text">Map View</span>
+                </a>
+                <a href="#section-uploads" class="nav-link">
+                    <span class="nav-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" focusable="false">
+                            <path d="M12 3v11" />
+                            <path d="M8.5 7.5L12 3l3.5 4.5" />
+                            <path d="M4 14.5v4.5h16v-4.5" />
+                        </svg>
+                    </span>
+                    <span class="nav-text">Data Uploads</span>
+                </a>
+            </nav>
+            <div class="sidebar-footer">
+                <a class="sidebar-logout" href="#" id="logoutLink">Logout</a>
+                <p class="sidebar-meta">ALECO Dashboard</p>
+            </div>
+        </aside>
+
+        <section class="main-content">
+            <div class="cards-grid">
+                <article class="panel-card section-card" id="section-overview">
+                    <h2>Overview</h2>
+                    <p class="section-note">Use the left menu to jump between sections. The active section is highlighted automatically.</p>
+                    <div class="overview-stack">
+                        <section class="network-image-card">
+                            <img class="network-image" src="/static/imgs/ALECO_System Map_v1.jpg" alt="ALECO Distribution Network Map">
+                        </section>
+                        <section class="fact-sheet">
+                            <div class="fact-sheet-title">FACT SHEET</div>
+                            <table class="fact-table">
+                                <tr><td>Date Organized</td><td>09 August 1972</td></tr>
+                                <tr><td>Classification</td><td>Mega Large</td></tr>
+                                <tr><td>Demand</td><td>122.55 MW</td></tr>
+                                <tr><td>Substations</td><td>6 substations; 1 substation owned by NGCP; 160MW Capacity</td></tr>
+                                <tr><td>Feeders</td><td>24 feeders (mainland); 4 feeders (islands)</td></tr>
+                                <tr><td>Covered Areas</td><td>3 Cities and 15 Municipalities</td></tr>
+                                <tr><td>No. Barangays</td><td>720</td></tr>
+                                <tr><td>Energy Consumption (ave.)</td><td>60,707,353 kWh</td></tr>
+                                <tr><td>Energy Consumption (max.)</td><td>68,947,855 kWh</td></tr>
+                                <tr><td>Load Factor</td><td>67%</td></tr>
+                                <tr><td>Power Factor</td><td>96%</td></tr>
+                                <tr><td>Sub-transmission line</td><td>2.3 km</td></tr>
+                                <tr><td>13.2 kV km. of lines</td><td>2,927 km</td></tr>
+                                <tr><td>No. of Consumers</td><td>207,582 billed consumers</td></tr>
+                                <tr><td>No. of Employees</td><td>397</td></tr>
+                                <tr><td>Employee Consumer Ratio</td><td>1 : 816</td></tr>
+                                <tr><td>Status of Energization</td><td>99.52%</td></tr>
+                                <tr><td>Category Level</td><td>C</td></tr>
+                            </table>
+                        </section>
+                    </div>
+                </article>
+
+                <article class="panel-card section-card wide-card" id="section-energy">
+                    <h2>Energy Analytics</h2>
+                    <div class="graph-card hourly-day-card">
+                        <div class="uploaded-data-head">
+                            <div>
+                                <h3>Hourly Loading (kWh)</h3>
+                                <p class="upload-help">Hourly energy summed from 5-minute data for the selected day. Choose All days to show the maximum hourly total (sum of 5-minute values) across the month.</p>
+                            </div>
+                            <div class="upload-filter">
+                                <label for="hourlyMonthSelect">Month</label>
+                                <select id="hourlyMonthSelect">
+                                    <option value="">Loading months...</option>
+                                </select>
+                            </div>
+                            <div class="upload-filter">
+                                <label for="hourlyDaySelect">Day</label>
+                                <select id="hourlyDaySelect"></select>
+                            </div>
+                        </div>
+                        <div class="upload-chart-status" id="hourlyDayStatus"></div>
+                        <canvas id="hourlyDayChart"></canvas>
+                    </div>
+                    <div class="graph-card hourly-day-card">
+                        <div class="uploaded-data-head">
+                            <div>
+                                <h3>Hourly Loading (kW)</h3>
+                                <p class="upload-help">Hourly demand summed from 5-minute kW values for the selected day. Choose All days to show the maximum hourly total across the month.</p>
+                            </div>
+                            <div class="upload-filter">
+                                <label for="hourlyKwMonthSelect">Month</label>
+                                <select id="hourlyKwMonthSelect">
+                                    <option value="">Loading months...</option>
+                                </select>
+                            </div>
+                            <div class="upload-filter">
+                                <label for="hourlyKwDaySelect">Day</label>
+                                <select id="hourlyKwDaySelect"></select>
+                            </div>
+                        </div>
+                        <div class="upload-chart-status" id="hourlyKwStatus"></div>
+                        <canvas id="hourlyKwChart"></canvas>
+                    </div>
+                    <div class="graph-card peak-load-card">
+                        <div class="uploaded-data-head">
+                            <div>
+                                <h3>Peak Load (Uploaded)</h3>
+                                <p class="upload-help">Peak Load, kW pulled from the EDD sheet (row 58) for each uploaded month.</p>
+                            </div>
+                            <div class="upload-filter">
+                                <label for="peakYearSelect">Year</label>
+                                <select id="peakYearSelect">
+                                    <option value="">Loading years...</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="upload-chart-status" id="peakLoadStatus"></div>
+                        <canvas id="peakLoadChart"></canvas>
+                    </div>
+                    <div class="graph-layout">
+                        <div class="graph-card">
+                            <span class="chart-tag">EX</span>
+                            <h3>Hourly Loading (kW) - Feb 2024</h3>
+                            <canvas id="hourlyLoadingChart"></canvas>
+                        </div>
+                        <div class="graph-card">
+                            <span class="chart-tag">EX</span>
+                            <h3>Substation Capacity vs Demand</h3>
+                            <canvas id="capacityDemandChart"></canvas>
+                        </div>
+                        <div class="graph-card">
+                            <span class="chart-tag">EX</span>
+                            <h3>Monthly Demand Profile</h3>
+                            <canvas id="monthlyProfileChart"></canvas>
+                        </div>
+                    </div>
+                    <div class="rate-mix-panel">
+                        <div class="rate-block">
+                            <h3>February 2026</h3>
+                            <table class="rate-table">
+                                <tr><th colspan="2">Effective Rate</th></tr>
+                                <tr><td>Residential</td><td>9.8907</td></tr>
+                                <tr><td>LV</td><td>9.0154</td></tr>
+                                <tr><td>HV</td><td>7.2678</td></tr>
+                                <tr><td>Gen Rate</td><td>5.5447</td></tr>
+                                <tr><td>Trans Rate</td><td>1.3035</td></tr>
+                                <tr><td>Dist.</td><td>0.4613</td></tr>
+                                <tr><td>Supply</td><td>0.5376</td></tr>
+                                <tr><td>Metering</td><td>0.3205</td></tr>
+                            </table>
+                        </div>
+                        <div class="mix-block">
+                            <span class="chart-tag">EX</span>
+                            <h3>Generation Mix</h3>
+                            <canvas id="generationMixChart"></canvas>
+                        </div>
+                    </div>
+                    <div class="demand-snapshot">
+                        <div class="demand-table-wrap">
+                            <h3>Demand Snapshot</h3>
+                            <table class="demand-table">
+                                <thead>
+                                    <tr>
+                                        <th>Demand</th>
+                                        <th>2024</th>
+                                        <th>2025</th>
+                                        <th>2026</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr><td>January</td><td>101</td><td>105</td><td>112</td></tr>
+                                    <tr><td>February</td><td>97</td><td>106</td><td>112</td></tr>
+                                    <tr><td>March</td><td>104</td><td>110</td><td>-</td></tr>
+                                    <tr><td>April</td><td>115</td><td>124</td><td>-</td></tr>
+                                    <tr><td>May</td><td>122</td><td>125</td><td>-</td></tr>
+                                    <tr><td>June</td><td>123</td><td>128</td><td>-</td></tr>
+                                    <tr><td>July</td><td>113</td><td>122</td><td>-</td></tr>
+                                    <tr><td>August</td><td>120</td><td>124</td><td>-</td></tr>
+                                    <tr><td>September</td><td>116</td><td>119</td><td>-</td></tr>
+                                    <tr><td>October</td><td>120</td><td>122</td><td>-</td></tr>
+                                    <tr><td>November</td><td>111</td><td>120</td><td>-</td></tr>
+                                    <tr><td>December</td><td>111</td><td>118</td><td>-</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </article>
+
+                <article class="panel-card section-card wide-card" id="section-outages">
+                    <h2>Loss and Forecast</h2>
+                    <div class="graph-layout two-col">
+                        <div class="graph-card">
+                            <span class="chart-tag">EX</span>
+                            <h3>Systems Loss</h3>
+                            <canvas id="systemsLossChart"></canvas>
+                        </div>
+                        <div class="graph-card">
+                            <span class="chart-tag">EX</span>
+                            <h3>Forecasted Supply vs Demand</h3>
+                            <canvas id="forecastSupplyDemandChart"></canvas>
+                        </div>
+                    </div>
+                </article>
+
+                <article class="panel-card map-card section-card" id="section-map">
+                    <h2>Map View</h2>
+                    <p class="section-note">Click a region to view quick details.</p>
+                    <div class="status-board">
+                        <div class="status-body">
+                            <div class="map-frame">
+                                <section class="interactive-map map-panel" data-interactive-map data-branch="1">
+                                    <img class="map-image" src="/static/imgs/branch 1.png" alt="Albay service map - Branch 1">
+                                    <svg class="map-overlay"
+                                         viewBox="0 0 7820 5531"
+                                         preserveAspectRatio="xMidYMid meet"
+                                         role="img"
+                                         aria-label="Clickable map regions"
+                                         data-map-overlay
+                                         data-area-base="/static/imgs/branch 1"
+                                         data-area-files="Tabaco.svg, Santo Domingo.svg, Tiwi.svg, Malinao.svg, Malilipot.svg, Bacacay.svg"></svg>
+                                    <div class="map-tooltip" data-map-tooltip aria-hidden="true" role="dialog">
+                                        <div class="map-tooltip-title" data-map-tooltip-title></div>
+                                        <div class="map-tooltip-body" data-map-tooltip-body></div>
+                                    </div>
+                                </section>
+                                <section class="interactive-map map-panel is-hidden" data-interactive-map data-branch="2">
+                                    <img class="map-image" src="/static/imgs/branch 2.png" alt="Albay service map - Branch 2">
+                                    <svg class="map-overlay"
+                                         viewBox="0 0 7820 5531"
+                                         preserveAspectRatio="xMidYMid meet"
+                                         role="img"
+                                         aria-label="Clickable map regions"
+                                         data-map-overlay
+                                         data-area-base="/static/imgs/branch 2"
+                                         data-area-files="Camalig.svg, Daraga.svg, Legazpi.svg, Manito.svg, Rapu Rapu.svg"></svg>
+                                    <div class="map-tooltip" data-map-tooltip aria-hidden="true" role="dialog">
+                                        <div class="map-tooltip-title" data-map-tooltip-title></div>
+                                        <div class="map-tooltip-body" data-map-tooltip-body></div>
+                                    </div>
+                                </section>
+                                <section class="interactive-map map-panel is-hidden" data-interactive-map data-branch="3">
+                                    <img class="map-image" src="/static/imgs/branch 3.png" alt="Albay service map - Branch 3">
+                                    <svg class="map-overlay"
+                                         viewBox="0 0 7820 5531"
+                                         preserveAspectRatio="xMidYMid meet"
+                                         role="img"
+                                         aria-label="Clickable map regions"
+                                         data-map-overlay
+                                         data-area-base="/static/imgs/branch 3"
+                                         data-area-files="Polangui.svg, Ligao City.svg, Guinobatan.svg, Libon.svg, Oas.svg, Pio Duran.svg, Jovellar.svg"
+                                         data-src="/static/imgs/branch 3.svg"></svg>
+                                    <div class="map-tooltip" data-map-tooltip aria-hidden="true" role="dialog">
+                                        <div class="map-tooltip-title" data-map-tooltip-title></div>
+                                        <div class="map-tooltip-body" data-map-tooltip-body></div>
+                                    </div>
+                                </section>
+                            </div>
+                            <aside class="level-legend" id="levelLegend"></aside>
+                        </div>
+                    </div>
+
+                    <div class="editor-panel">
+                        <div class="map-controls">
+                            <h3>Edit Electrification Level</h3>
+                            <label for="branchSelect">Branch</label>
+                            <select id="branchSelect">
+                                <option value="1" selected>Branch 1</option>
+                                <option value="2">Branch 2</option>
+                                <option value="3">Branch 3</option>
+                            </select>
+                        </div>
+                        <div id="levelEditor"></div>
+                    </div>
+
+                    <div class="location-details" id="locationDetails">
+                        <h3>Location Details</h3>
+                        <p>Click a location on the map to see details.</p>
+                    </div>
+                    <p class="map-hint">Click anywhere outside a region to close the info box.</p>
+                </article>
+
+                <article class="panel-card section-card wide-card" id="section-uploads">
+                    <h2>Data Uploads</h2>
+                    <p class="section-note">Upload raw data files to refresh chart inputs.</p>
+                    <div class="upload-grid">
+                        <form class="upload-form" action="#" method="POST" enctype="multipart/form-data">
+                            <div class="upload-warning">
+                                Upload raw Excel or CSV data only. Avoid formatted reports, merged cells, or pivot tables.
+                            </div>
+                            <label for="uploadCategory">File Type</label>
+                            <select id="uploadCategory" name="uploadCategory">
+                                <option value="hourly">Hourly Loading (kWh)</option>
+                                <option value="edd">EDD Report</option>
+                                <option value="other">Other</option>
+                            </select>
+                            <label for="uploadFiles">Select data file(s)</label>
+                            <input id="uploadFiles" name="uploadFiles" type="file" accept=".xlsx,.xls,.csv" multiple>
+                            <div class="upload-selected">
+                                <p class="upload-selected-empty" id="uploadSelectedEmpty">No files selected.</p>
+                                <ul class="upload-selected-list" id="uploadSelectedList"></ul>
+                            </div>
+                            <p class="upload-help">Tip: Use names like "EDD as of January 2026" so files sort into the right year.</p>
+                            <div class="upload-error" id="uploadError" role="alert" aria-live="polite"></div>
+                            <div class="upload-actions">
+                                <button type="submit" class="primary-btn" id="uploadSubmit" disabled>Upload Data</button>
+                            </div>
+                        </form>
+                        <div class="upload-list">
+                            <div class="upload-list-section">
+                                <div class="upload-list-header">
+                                    <h3>Recent Uploads</h3>
+                                </div>
+                                <ul class="upload-items" id="recentUploadsList"></ul>
+                                <p class="upload-empty" id="recentUploadsEmpty">No uploads yet.</p>
+                            </div>
+                            <div class="upload-list-section">
+                                <div class="upload-list-header">
+                                    <h3>All Uploads</h3>
+                                    <div class="upload-filter">
+                                        <label for="uploadYearFilter">Year</label>
+                                        <select id="uploadYearFilter">
+                                            <option value="all" selected>All years</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <p class="upload-help">Sorted by year and month detected from the filename.</p>
+                                <div id="allUploadsContainer"></div>
+                                <p class="upload-empty" id="allUploadsEmpty">No uploads yet.</p>
+                            </div>
+                        </div>
+                    </div>
+                </article>
+            </div>
+        </section>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="/static/script.js"></script>
+</body>
+</html>
