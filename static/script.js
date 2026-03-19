@@ -2562,6 +2562,65 @@
 
         let chart = null;
         let monthItems = [];
+        const daysCache = new Map();
+        const payloadCache = new Map();
+        const MAX_HIGHLIGHT = "#facc15";
+        const DEFAULT_BAR = "#1d4ed8";
+
+        function buildBarColors(values) {
+            const numbers = (values || []).filter(function (val) {
+                return typeof val === "number" && Number.isFinite(val);
+            });
+            if (numbers.length === 0) {
+                return values.map(function () { return DEFAULT_BAR; });
+            }
+            const maxValue = Math.max.apply(null, numbers);
+            if (!Number.isFinite(maxValue) || maxValue <= 0) {
+                return values.map(function () { return DEFAULT_BAR; });
+            }
+            return values.map(function (val) {
+                if (typeof val !== "number" || !Number.isFinite(val)) return DEFAULT_BAR;
+                return Math.abs(val - maxValue) < 1e-6 ? MAX_HIGHLIGHT : DEFAULT_BAR;
+            });
+        }
+
+        const barValuePlugin = {
+            id: "barValueLabels",
+            afterDatasetsDraw: function (chartInstance) {
+                const ctx = chartInstance.ctx;
+                const meta = chartInstance.getDatasetMeta(0);
+                if (!meta || meta.hidden) return;
+                const dataset = chartInstance.data.datasets[0];
+                const values = dataset.data || [];
+
+                ctx.save();
+                ctx.textAlign = "center";
+                ctx.textBaseline = "middle";
+
+                meta.data.forEach(function (bar, index) {
+                    const value = values[index];
+                    if (typeof value !== "number" || !Number.isFinite(value)) return;
+                    const barProps = bar.getProps(["x", "y", "base"], true);
+                    const barHeight = Math.abs(barProps.base - barProps.y);
+                    if (barHeight < 16) return;
+                    const fontSize = Math.max(9, Math.min(12, Math.floor(barHeight / 2)));
+                    ctx.font = `600 ${fontSize}px Segoe UI, Tahoma, Geneva, Verdana, sans-serif`;
+                    const barColor = Array.isArray(dataset.backgroundColor)
+                        ? dataset.backgroundColor[index]
+                        : dataset.backgroundColor;
+                    ctx.fillStyle = barColor === MAX_HIGHLIGHT ? "#1f2937" : "#ffffff";
+
+                    const label = Number(value).toLocaleString(undefined, { maximumFractionDigits: 2 });
+                    ctx.save();
+                    ctx.translate(barProps.x, barProps.y + (barHeight / 2));
+                    ctx.rotate(-Math.PI / 2);
+                    ctx.fillText(label, 0, 0);
+                    ctx.restore();
+                });
+
+                ctx.restore();
+            }
+        };
 
         function setStatus(message) {
             if (!status) return;
@@ -2573,11 +2632,13 @@
             const labels = payload.labels || [];
             const values = payload.values || [];
             const metric = payload.metric || "Energy (kWh)";
+            const colors = buildBarColors(values);
 
             if (chart) {
                 chart.data.labels = labels;
                 chart.data.datasets[0].label = metric;
                 chart.data.datasets[0].data = values;
+                chart.data.datasets[0].backgroundColor = colors;
                 chart.update();
                 return;
             }
@@ -2589,10 +2650,11 @@
                     datasets: [{
                         label: metric,
                         data: values,
-                        backgroundColor: "#1d4ed8",
+                        backgroundColor: colors,
                         borderRadius: 2
                     }]
                 },
+                plugins: [barValuePlugin],
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
@@ -2659,6 +2721,12 @@
                 return;
             }
             setStatus("");
+            const cacheKey = `${monthValue}|${day}`;
+            const cached = payloadCache.get(cacheKey);
+            if (cached) {
+                updateChart(cached);
+                return;
+            }
             const endpoint = day === "all"
                 ? `/api/edd-hourly-month/${parsed.id}?start=${parsed.start}&end=${parsed.end}`
                 : `/api/edd-hourly-day/${parsed.id}?date=${day}`;
@@ -2673,6 +2741,7 @@
                         setStatus("No usable data found.");
                         return;
                     }
+                    payloadCache.set(cacheKey, payload);
                     updateChart(payload);
                 })
                 .catch(function () {
@@ -2688,6 +2757,14 @@
                 return;
             }
             setStatus("");
+            if (daysCache.has(monthValue)) {
+                const cachedDays = daysCache.get(monthValue);
+                populateDays(cachedDays);
+                if (cachedDays.length > 0) {
+                    loadDay(monthValue, "all");
+                }
+                return;
+            }
             fetch(`/api/edd-hourly-days/${parsed.id}?start=${parsed.start}&end=${parsed.end}`)
                 .then(function (response) { return response.json(); })
                 .then(function (payload) {
@@ -2697,6 +2774,7 @@
                         return;
                     }
                     const days = payload.dates || [];
+                    daysCache.set(monthValue, days);
                     populateDays(days);
                     if (days.length > 0) {
                         loadDay(monthValue, "all");
@@ -2762,6 +2840,306 @@
                         yearOption.textContent = "No years available";
                         yearSelect.appendChild(yearOption);
                         yearSelect.disabled = true;
+                        monthSelect.disabled = true;
+                        populateDays([]);
+                        return;
+                    }
+                    populateMonthOptions();
+                })
+                .catch(function () {
+                    monthSelect.innerHTML = "";
+                    const option = document.createElement("option");
+                    option.value = "";
+                    option.textContent = "Unable to load months";
+                    monthSelect.appendChild(option);
+                    populateDays([]);
+                });
+        }
+
+        populateMonths();
+    }
+
+    function initHourlyDayKwChart() {
+        const monthSelect = document.getElementById("hourlyKwMonthSelect");
+        const daySelect = document.getElementById("hourlyKwDaySelect");
+        const canvas = document.getElementById("hourlyKwChart");
+        const status = document.getElementById("hourlyKwStatus");
+        if (!monthSelect || !daySelect || !canvas || !window.Chart) return;
+
+        let chart = null;
+        let monthItems = [];
+        const daysCache = new Map();
+        const payloadCache = new Map();
+        const MAX_HIGHLIGHT = "#facc15";
+        const DEFAULT_BAR = "#1d4ed8";
+
+        function buildBarColors(values) {
+            const numbers = (values || []).filter(function (val) {
+                return typeof val === "number" && Number.isFinite(val);
+            });
+            if (numbers.length === 0) {
+                return values.map(function () { return DEFAULT_BAR; });
+            }
+            const maxValue = Math.max.apply(null, numbers);
+            if (!Number.isFinite(maxValue) || maxValue <= 0) {
+                return values.map(function () { return DEFAULT_BAR; });
+            }
+            return values.map(function (val) {
+                if (typeof val !== "number" || !Number.isFinite(val)) return DEFAULT_BAR;
+                return Math.abs(val - maxValue) < 1e-6 ? MAX_HIGHLIGHT : DEFAULT_BAR;
+            });
+        }
+
+        const barValuePlugin = {
+            id: "barValueLabelsKw",
+            afterDatasetsDraw: function (chartInstance) {
+                const ctx = chartInstance.ctx;
+                const meta = chartInstance.getDatasetMeta(0);
+                if (!meta || meta.hidden) return;
+                const dataset = chartInstance.data.datasets[0];
+                const values = dataset.data || [];
+
+                ctx.save();
+                ctx.textAlign = "center";
+                ctx.textBaseline = "middle";
+
+                meta.data.forEach(function (bar, index) {
+                    const value = values[index];
+                    if (typeof value !== "number" || !Number.isFinite(value)) return;
+                    const barProps = bar.getProps(["x", "y", "base"], true);
+                    const barHeight = Math.abs(barProps.base - barProps.y);
+                    if (barHeight < 16) return;
+                    const fontSize = Math.max(9, Math.min(12, Math.floor(barHeight / 2)));
+                    ctx.font = `600 ${fontSize}px Segoe UI, Tahoma, Geneva, Verdana, sans-serif`;
+                    const barColor = Array.isArray(dataset.backgroundColor)
+                        ? dataset.backgroundColor[index]
+                        : dataset.backgroundColor;
+                    ctx.fillStyle = barColor === MAX_HIGHLIGHT ? "#1f2937" : "#ffffff";
+
+                    const label = Number(value).toLocaleString(undefined, { maximumFractionDigits: 2 });
+                    ctx.save();
+                    ctx.translate(barProps.x, barProps.y + (barHeight / 2));
+                    ctx.rotate(-Math.PI / 2);
+                    ctx.fillText(label, 0, 0);
+                    ctx.restore();
+                });
+
+                ctx.restore();
+            }
+        };
+
+        function setStatus(message) {
+            if (!status) return;
+            status.textContent = message || "";
+            status.classList.toggle("is-visible", !!message);
+        }
+
+        function updateChart(payload) {
+            const labels = payload.labels || [];
+            const values = payload.values || [];
+            const metric = payload.metric || "Load (kW)";
+            const colors = buildBarColors(values);
+
+            if (chart) {
+                chart.data.labels = labels;
+                chart.data.datasets[0].label = metric;
+                chart.data.datasets[0].data = values;
+                chart.data.datasets[0].backgroundColor = colors;
+                chart.update();
+                return;
+            }
+
+            chart = registerChart(new Chart(canvas, {
+                type: "bar",
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: metric,
+                        data: values,
+                        backgroundColor: colors,
+                        borderRadius: 2
+                    }]
+                },
+                plugins: [barValuePlugin],
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    layout: { padding: { top: 10, right: 12, bottom: 4, left: 6 } },
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: {
+                            ticks: {
+                                autoSkip: true,
+                                maxTicksLimit: 12,
+                                padding: 6
+                            }
+                        },
+                        y: {
+                            beginAtZero: true,
+                            title: { display: true, text: metric },
+                            ticks: { callback: numberTick }
+                        }
+                    }
+                }
+            }));
+        }
+
+        function populateDays(days) {
+            daySelect.innerHTML = "";
+            if (!days || days.length === 0) {
+                const option = document.createElement("option");
+                option.value = "";
+                option.textContent = "No days available";
+                daySelect.appendChild(option);
+                daySelect.disabled = true;
+                return;
+            }
+
+            daySelect.disabled = false;
+            const allOption = document.createElement("option");
+            allOption.value = "all";
+            allOption.textContent = "All days (max)";
+            daySelect.appendChild(allOption);
+            days.forEach(function (day) {
+                const option = document.createElement("option");
+                option.value = String(day);
+                option.textContent = String(day);
+                daySelect.appendChild(option);
+            });
+        }
+
+        function parseMonthValue(value) {
+            const parts = String(value || "").split("|");
+            if (parts.length !== 3) {
+                return null;
+            }
+            return {
+                id: parts[0],
+                start: parts[1],
+                end: parts[2]
+            };
+        }
+
+        function loadDay(monthValue, day) {
+            const parsed = parseMonthValue(monthValue);
+            if (!parsed || !day) {
+                setStatus("Select a month and day (or All days) to view data.");
+                return;
+            }
+            setStatus("");
+            const cacheKey = `${monthValue}|${day}`;
+            const cached = payloadCache.get(cacheKey);
+            if (cached) {
+                updateChart(cached);
+                return;
+            }
+            const endpoint = day === "all"
+                ? `/api/edd-hourly-kw-month/${parsed.id}?start=${parsed.start}&end=${parsed.end}`
+                : `/api/edd-hourly-kw-day/${parsed.id}?date=${day}`;
+            fetch(endpoint)
+                .then(function (response) { return response.json(); })
+                .then(function (payload) {
+                    if (payload && payload.error) {
+                        setStatus(payload.error);
+                        return;
+                    }
+                    if (!payload || !payload.labels || payload.labels.length === 0) {
+                        setStatus("No usable data found.");
+                        return;
+                    }
+                    payloadCache.set(cacheKey, payload);
+                    updateChart(payload);
+                })
+                .catch(function () {
+                    setStatus("Unable to load chart data.");
+                });
+        }
+
+        function loadDays(monthValue) {
+            const parsed = parseMonthValue(monthValue);
+            if (!parsed) {
+                setStatus("Upload a file to view this chart.");
+                populateDays([]);
+                return;
+            }
+            setStatus("");
+            if (daysCache.has(monthValue)) {
+                const cachedDays = daysCache.get(monthValue);
+                populateDays(cachedDays);
+                if (cachedDays.length > 0) {
+                    loadDay(monthValue, "all");
+                }
+                return;
+            }
+            fetch(`/api/edd-hourly-kw-days/${parsed.id}?start=${parsed.start}&end=${parsed.end}`)
+                .then(function (response) { return response.json(); })
+                .then(function (payload) {
+                    if (payload && payload.error) {
+                        setStatus(payload.error);
+                        populateDays([]);
+                        return;
+                    }
+                    const days = payload.dates || [];
+                    daysCache.set(monthValue, days);
+                    populateDays(days);
+                    if (days.length > 0) {
+                        loadDay(monthValue, "all");
+                    }
+                })
+                .catch(function () {
+                    setStatus("Unable to load available days.");
+                    populateDays([]);
+                });
+        }
+
+        monthSelect.addEventListener("change", function () {
+            loadDays(monthSelect.value);
+        });
+
+        daySelect.addEventListener("change", function () {
+            loadDay(monthSelect.value, daySelect.value);
+        });
+
+        function populateMonthOptions() {
+            monthSelect.innerHTML = "";
+            if (monthItems.length === 0) {
+                const option = document.createElement("option");
+                option.value = "";
+                option.textContent = "No months available";
+                monthSelect.appendChild(option);
+                monthSelect.disabled = true;
+                populateDays([]);
+                return;
+            }
+            monthSelect.disabled = false;
+            monthItems.sort(function (a, b) { return String(a.start).localeCompare(String(b.start)); });
+            monthItems.forEach(function (item) {
+                const option = document.createElement("option");
+                option.value = `${item.id}|${item.start}|${item.end}`;
+                option.textContent = item.label || item.start || "";
+                monthSelect.appendChild(option);
+            });
+            loadDays(monthSelect.value);
+        }
+
+        function populateMonths() {
+            monthSelect.innerHTML = "";
+            const loading = document.createElement("option");
+            loading.value = "";
+            loading.textContent = "Loading months...";
+            monthSelect.appendChild(loading);
+
+            fetch("/api/edd-hourly-kw-months")
+                .then(function (response) { return response.json(); })
+                .then(function (payload) {
+                    const items = payload.items || [];
+                    monthItems = items;
+                    if (items.length === 0) {
+                        monthSelect.innerHTML = "";
+                        const option = document.createElement("option");
+                        option.value = "";
+                        option.textContent = "No uploads yet";
+                        monthSelect.appendChild(option);
                         monthSelect.disabled = true;
                         populateDays([]);
                         return;
@@ -2878,6 +3256,7 @@
     initHourlyUploadChart();
     initPeakLoadChart();
     initHourlyDayChart();
+    initHourlyDayKwChart();
 
     if (!mapElement) {
         initSvgOverlayMap();

@@ -133,6 +133,26 @@
                         <div class="upload-chart-status" id="hourlyDayStatus"></div>
                         <canvas id="hourlyDayChart"></canvas>
                     </div>
+                    <div class="graph-card hourly-day-card">
+                        <div class="uploaded-data-head">
+                            <div>
+                                <h3>Hourly Loading (kW)</h3>
+                                <p class="upload-help">Hourly demand summed from 5-minute kW values for the selected day. Choose All days to show the maximum hourly total across the month.</p>
+                            </div>
+                            <div class="upload-filter">
+                                <label for="hourlyKwMonthSelect">Month</label>
+                                <select id="hourlyKwMonthSelect">
+                                    <option value="">Loading months...</option>
+                                </select>
+                            </div>
+                            <div class="upload-filter">
+                                <label for="hourlyKwDaySelect">Day</label>
+                                <select id="hourlyKwDaySelect"></select>
+                            </div>
+                        </div>
+                        <div class="upload-chart-status" id="hourlyKwStatus"></div>
+                        <canvas id="hourlyKwChart"></canvas>
+                    </div>
                     <div class="graph-card peak-load-card">
                         <div class="uploaded-data-head">
                             <div>

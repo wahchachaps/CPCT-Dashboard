@@ -3,6 +3,7 @@ import os
 import re
 import uuid
 from datetime import datetime, time
+from functools import lru_cache
 
 import pandas as pd
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify
@@ -76,6 +77,13 @@ def allowed_file(filename):
     return ext in ALLOWED_EXTENSIONS
 
 
+def get_file_mtime(path):
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return 0
+
+
 def parse_year_month(filename):
     base = os.path.splitext(filename)[0].lower()
     year_match = re.search(r"(19|20)\d{2}", base)
@@ -123,7 +131,7 @@ def format_billing_label(start_date, end_date):
         return ""
     month_name = MONTH_NAMES[end_date.month - 1] if 1 <= end_date.month <= 12 else ""
     if start_date:
-        return f"{month_name} ({format_date_mdy(start_date)} -> {format_date_mdy(end_date)})"
+        return f"{month_name} ({format_date_mdy(start_date)} - {format_date_mdy(end_date)})"
     return month_name
 
 
@@ -281,6 +289,111 @@ def find_edd_sheet(sheet_names):
         if "edd" in lower:
             return name
     return None
+
+
+def match_month_in_name(name, target_year=None, target_month=None):
+    if not target_year and not target_month:
+        return False
+    lowered = str(name or "").lower()
+    if target_year and str(target_year) not in lowered:
+        return False
+    if target_month:
+        month_name = MONTH_NAMES[target_month - 1].lower() if 1 <= target_month <= 12 else ""
+        if month_name and month_name in lowered:
+            return True
+        for alias, month_num in MONTH_ALIASES:
+            if month_num == target_month and alias in lowered:
+                return True
+        return False
+    return True
+
+
+def find_kw_header_row(df):
+    for i in range(min(len(df), 12)):
+        row = df.iloc[i]
+        tokens = {str(val).strip().upper() for val in row.tolist() if pd.notna(val)}
+        if "KW_DEL" in tokens and "TIME" in tokens and ("BDATE" in tokens or "DATE" in tokens):
+            return i
+    return None
+
+
+def find_kw_sheet(xl, target_year=None, target_month=None):
+    candidates = []
+    for sheet in xl.sheet_names:
+        preview = xl.parse(sheet, header=None, nrows=12)
+        header_idx = find_kw_header_row(preview)
+        if header_idx is None:
+            continue
+        has_multi_sein = False
+        try:
+            sample = xl.parse(sheet, header=header_idx, nrows=200)
+            sein_col = None
+            for col in sample.columns:
+                if str(col).strip().upper() == "SEIN":
+                    sein_col = col
+                    break
+            if sein_col:
+                unique_sein = sample[sein_col].dropna().unique()
+                has_multi_sein = len(unique_sein) > 1
+        except Exception:
+            has_multi_sein = False
+        candidates.append((sheet, header_idx, has_multi_sein))
+
+    if not candidates:
+        return None, None
+
+    for sheet, header_idx, _ in candidates:
+        if match_month_in_name(sheet, target_year, target_month):
+            return sheet, header_idx
+
+    for sheet, header_idx, has_multi in candidates:
+        if has_multi:
+            return sheet, header_idx
+
+    return candidates[0][0], candidates[0][1]
+
+
+def load_kw_sheet(xl, target_year=None, target_month=None):
+    sheet, header_idx = find_kw_sheet(xl, target_year, target_month)
+    if not sheet:
+        return None, None, "KW data sheet not found."
+    df = xl.parse(sheet, header=header_idx)
+    return df, sheet, None
+
+
+def get_kw_columns(df):
+    columns = {str(col).strip().upper(): col for col in df.columns}
+    date_col = columns.get("BDATE") or columns.get("DATE")
+    time_col = columns.get("TIME")
+    kw_col = columns.get("KW_DEL")
+    if not date_col or not time_col or not kw_col:
+        return None, None, None, "KW_DEL data columns not found."
+    return date_col, time_col, kw_col, None
+
+
+@lru_cache(maxsize=24)
+def _load_kw_base(file_path, mtime, target_year=None, target_month=None):
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext == ".csv":
+        return None, None, None, None, "Hourly Loading requires an Excel file."
+    try:
+        xl = pd.ExcelFile(file_path)
+    except Exception:
+        return None, None, None, None, "Unable to read Excel file."
+
+    df, sheet, error = load_kw_sheet(xl, target_year, target_month)
+    if error:
+        return None, None, None, None, error
+
+    date_col, time_col, kw_col, col_error = get_kw_columns(df)
+    if col_error:
+        return None, None, None, None, col_error
+
+    date_series = pd.to_datetime(df[date_col], errors="coerce")
+    time_series = pd.to_datetime(df[time_col].astype(str), format="%H:%M:%S", errors="coerce")
+    kw_series = pd.to_numeric(df[kw_col], errors="coerce")
+
+    return date_series, time_series, kw_series, sheet, None
 
 
 def extract_kwhr_purchase_data(file_path):
@@ -733,6 +846,112 @@ def extract_cp_hourly_month_max(file_path, target_year=None, target_month=None, 
         "labels": labels,
         "values": values,
         "metric": "Energy (kWh)",
+        "sheet": sheet
+    }, None
+
+
+def extract_kw_available_dates(file_path):
+    date_series, _, _, _, error = _load_kw_base(file_path, get_file_mtime(file_path))
+    if error:
+        return None, error
+
+    dates = sorted(set(date_series.dropna().dt.date))
+    if not dates:
+        return None, "No matching dates found."
+
+    return dates, None
+
+
+def extract_kw_available_days(file_path, start_date=None, end_date=None):
+    dates, error = extract_kw_available_dates(file_path)
+    if error:
+        return None, error
+    if start_date and end_date:
+        dates = [d for d in dates if start_date <= d <= end_date]
+    if not dates:
+        return None, "No matching dates found."
+    return [format_date_ymd(d) for d in dates], None
+
+
+def extract_kw_hourly_day_data(file_path, target_year, target_month, target_day):
+    date_series, time_series, kw_series, sheet, error = _load_kw_base(
+        file_path,
+        get_file_mtime(file_path),
+        target_year,
+        target_month
+    )
+    if error:
+        return None, error
+
+    target_date = datetime(target_year, target_month, target_day).date()
+    mask = date_series.dt.date == target_date
+    if not mask.any():
+        return None, "Selected day not found in the file."
+
+    valid = mask & time_series.notna() & kw_series.notna()
+    if not valid.any():
+        return None, "No usable data found for that day."
+
+    hours = time_series.loc[valid].dt.hour
+    minutes = time_series.loc[valid].dt.minute
+    buckets = hours.where(minutes == 0, (hours + 1) % 24).astype(int)
+    sums = kw_series.loc[valid].groupby(buckets).sum()
+
+    labels = [format_hour_label(hour) for hour in range(24)]
+    series = [float(sums.get(hour, 0)) for hour in range(24)]
+
+    return {
+        "labels": labels,
+        "values": series,
+        "metric": "Load (kW)",
+        "sheet": sheet
+    }, None
+
+
+def extract_kw_hourly_month_max(file_path, target_year=None, target_month=None, start_date=None, end_date=None):
+    date_series, time_series, kw_series, sheet, error = _load_kw_base(
+        file_path,
+        get_file_mtime(file_path),
+        target_year,
+        target_month
+    )
+    if error:
+        return None, error
+
+    if start_date and end_date:
+        mask = date_series.notna() & (date_series.dt.date >= start_date) & (date_series.dt.date <= end_date)
+    elif target_year and target_month:
+        mask = date_series.notna() & (date_series.dt.year == target_year) & (date_series.dt.month == target_month)
+    else:
+        return None, "Year and month are required."
+
+    if not mask.any():
+        return None, "No matching dates found for that month."
+
+    valid = mask & time_series.notna() & kw_series.notna()
+    if not valid.any():
+        return None, "No usable data found for that month."
+
+    hours = time_series.loc[valid].dt.hour
+    minutes = time_series.loc[valid].dt.minute
+    buckets = hours.where(minutes == 0, (hours + 1) % 24).astype(int)
+    day_values = date_series.loc[valid].dt.date
+
+    grouped = pd.DataFrame({
+        "day": day_values,
+        "bucket": buckets,
+        "value": kw_series.loc[valid]
+    }).groupby(["day", "bucket"])["value"].sum()
+
+    max_by_bucket = grouped.groupby("bucket").max()
+
+    labels = [format_hour_label(hour) for hour in range(24)]
+    values = [float(max_by_bucket.get(hour, 0)) for hour in range(24)]
+
+    return {
+        "labels": labels,
+        "values": values,
+        "metric": "Load (kW)",
         "sheet": sheet
     }, None
 
@@ -1251,6 +1470,185 @@ def edd_hourly_months():
     items.sort(key=lambda item: (item.get("year", 0), item.get("month", 0), item.get("start", "")))
 
     return jsonify({"items": items})
+
+
+@app.route("/api/edd-hourly-kw-months")
+def edd_hourly_kw_months():
+    if "user" not in session:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    entries = load_manifest()
+    items = []
+    for entry in entries:
+        if get_entry_category(entry) != "hourly":
+            continue
+        stored = entry.get("stored_name")
+        if not stored:
+            continue
+        file_path = os.path.join(UPLOAD_DIR, stored)
+        if not os.path.exists(file_path):
+            continue
+        dates, error = extract_kw_available_dates(file_path)
+        if error or not dates:
+            continue
+        start_date = min(dates)
+        end_date = max(dates)
+        items.append({
+            "id": entry.get("id"),
+            "year": end_date.year,
+            "month": end_date.month,
+            "start": format_date_ymd(start_date),
+            "end": format_date_ymd(end_date),
+            "label": format_billing_label(start_date, end_date)
+        })
+
+    items.sort(key=lambda item: (item.get("year", 0), item.get("month", 0), item.get("start", "")))
+
+    return jsonify({"items": items})
+
+
+@app.route("/api/edd-hourly-kw-days/<upload_id>")
+def edd_hourly_kw_days(upload_id):
+    if "user" not in session:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    entries = load_manifest()
+    entry = next((item for item in entries if item.get("id") == upload_id), None)
+    if not entry:
+        return jsonify({"error": "File not found"}), 404
+
+    stored = entry.get("stored_name")
+    if not stored:
+        return jsonify({"error": "File not available"}), 404
+
+    file_path = os.path.join(UPLOAD_DIR, stored)
+    if not os.path.exists(file_path):
+        return jsonify({"error": "File missing on disk"}), 404
+
+    start_date = parse_iso_date(request.args.get("start"))
+    end_date = parse_iso_date(request.args.get("end"))
+
+    days, error = extract_kw_available_days(file_path, start_date, end_date)
+    if error:
+        return jsonify({"error": error}), 400
+
+    return jsonify({
+        "dates": days,
+        "start": format_date_ymd(start_date) if start_date else "",
+        "end": format_date_ymd(end_date) if end_date else ""
+    })
+
+
+@app.route("/api/edd-hourly-kw-day/<upload_id>/<int:day>")
+def edd_hourly_kw_day(upload_id, day):
+    if "user" not in session:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    entries = load_manifest()
+    entry = next((item for item in entries if item.get("id") == upload_id), None)
+    if not entry:
+        return jsonify({"error": "File not found"}), 404
+
+    stored = entry.get("stored_name")
+    if not stored:
+        return jsonify({"error": "File not available"}), 404
+
+    file_path = os.path.join(UPLOAD_DIR, stored)
+    if not os.path.exists(file_path):
+        return jsonify({"error": "File missing on disk"}), 404
+
+    query_year = request.args.get("year")
+    query_month = request.args.get("month")
+    entry_year = int(query_year) if query_year and query_year.isdigit() else None
+    entry_month = int(query_month) if query_month and query_month.isdigit() else None
+    if not entry_year or not entry_month:
+        parsed_year, parsed_month = parse_year_month(entry.get("original_name", ""))
+        entry_year = entry_year or parsed_year
+        entry_month = entry_month or parsed_month
+
+    if not entry_year or not entry_month:
+        return jsonify({"error": "Unable to detect month for this file."}), 400
+
+    payload, error = extract_kw_hourly_day_data(file_path, entry_year, entry_month, day)
+    if error:
+        return jsonify({"error": error}), 400
+
+    payload["label"] = entry.get("original_name", "")
+    return jsonify(payload)
+
+
+@app.route("/api/edd-hourly-kw-day/<upload_id>")
+def edd_hourly_kw_day_by_date(upload_id):
+    if "user" not in session:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    entries = load_manifest()
+    entry = next((item for item in entries if item.get("id") == upload_id), None)
+    if not entry:
+        return jsonify({"error": "File not found"}), 404
+
+    stored = entry.get("stored_name")
+    if not stored:
+        return jsonify({"error": "File not available"}), 404
+
+    file_path = os.path.join(UPLOAD_DIR, stored)
+    if not os.path.exists(file_path):
+        return jsonify({"error": "File missing on disk"}), 404
+
+    date_str = request.args.get("date")
+    target_date = parse_iso_date(date_str)
+    if not target_date:
+        return jsonify({"error": "Date is required in YYYY-MM-DD format."}), 400
+
+    payload, error = extract_kw_hourly_day_data(
+        file_path,
+        target_date.year,
+        target_date.month,
+        target_date.day
+    )
+    if error:
+        return jsonify({"error": error}), 400
+
+    payload["label"] = entry.get("original_name", "")
+    return jsonify(payload)
+
+
+@app.route("/api/edd-hourly-kw-month/<upload_id>")
+def edd_hourly_kw_month(upload_id):
+    if "user" not in session:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    entries = load_manifest()
+    entry = next((item for item in entries if item.get("id") == upload_id), None)
+    if not entry:
+        return jsonify({"error": "File not found"}), 404
+
+    stored = entry.get("stored_name")
+    if not stored:
+        return jsonify({"error": "File not available"}), 404
+
+    file_path = os.path.join(UPLOAD_DIR, stored)
+    if not os.path.exists(file_path):
+        return jsonify({"error": "File missing on disk"}), 404
+
+    start_date = parse_iso_date(request.args.get("start"))
+    end_date = parse_iso_date(request.args.get("end"))
+    query_year = request.args.get("year")
+    query_month = request.args.get("month")
+    entry_year = int(query_year) if query_year and query_year.isdigit() else None
+    entry_month = int(query_month) if query_month and query_month.isdigit() else None
+
+    if start_date and end_date:
+        payload, error = extract_kw_hourly_month_max(file_path, start_date=start_date, end_date=end_date)
+    else:
+        if not entry_year or not entry_month:
+            return jsonify({"error": "Year and month are required."}), 400
+        payload, error = extract_kw_hourly_month_max(file_path, entry_year, entry_month)
+    if error:
+        return jsonify({"error": error}), 400
+
+    payload["label"] = entry.get("original_name", "")
+    return jsonify(payload)
 
 
 @app.route("/api/edd-peak-load-year/<int:year>")
