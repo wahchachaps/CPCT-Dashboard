@@ -33,14 +33,29 @@ if os.path.isfile(ENV_PATH):
     except OSError:
         pass
 
+def _read_env(*names):
+    for name in names:
+        raw = os.environ.get(name)
+        if raw is None:
+            continue
+        value = str(raw).strip()
+        if value:
+            return value
+    return ""
+
+
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "supersecretkey")
 if os.environ.get("SESSION_COOKIE_SECURE", "") == "1":
     app.config["SESSION_COOKIE_SECURE"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip()
-SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
-DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+SUPABASE_URL = _read_env("SUPABASE_URL", "SUPABASE_PROJECT_URL")
+SUPABASE_SERVICE_ROLE_KEY = _read_env("SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_SERVICE_KEY")
+DATABASE_URL = _read_env("DATABASE_URL")
+SUPABASE_CONFIG_MESSAGE = (
+    "Supabase is not configured on the server. "
+    "Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY."
+)
 ALLOWED_EXTENSIONS = {".xlsx", ".xls", ".csv"}
 MONTH_ALIASES = [
     ("january", 1), ("jan", 1),
@@ -89,7 +104,7 @@ def get_supabase() -> "Client":
     global _supabase_client
     if _supabase_client is None:
         if not supabase_enabled():
-            raise RuntimeError("Supabase configuration missing. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.")
+            raise RuntimeError(SUPABASE_CONFIG_MESSAGE)
         try:
             from supabase import create_client
         except ImportError as exc:
@@ -1762,7 +1777,7 @@ def login():
         if not email or not password:
             error = "Email and password are required."
         elif not supabase_enabled():
-            error = "Supabase is not configured."
+            error = SUPABASE_CONFIG_MESSAGE
         else:
             try:
                 result = get_supabase().auth.sign_in_with_password({
@@ -1811,7 +1826,7 @@ def upload_file():
         return redirect(url_for("login"))
     if not supabase_enabled():
         if wants_json_response():
-            return jsonify({"error": "Supabase is not configured."}), 500
+            return jsonify({"error": SUPABASE_CONFIG_MESSAGE}), 500
         return redirect(url_for("dashboard", upload_error="supabase") + "#section-uploads")
 
     files = request.files.getlist("uploadFiles")
@@ -1910,7 +1925,7 @@ def api_login():
     if not email or not password:
         return jsonify({"error": "Email and password are required."}), 400
     if not supabase_enabled():
-        return jsonify({"error": "Supabase is not configured."}), 500
+        return jsonify({"error": SUPABASE_CONFIG_MESSAGE}), 500
     try:
         result = get_supabase().auth.sign_in_with_password({
             "email": email,
@@ -1984,7 +1999,7 @@ def api_upload():
     if not user:
         return jsonify({"error": "Unauthorized"}), 401
     if not supabase_enabled():
-        return jsonify({"error": "Supabase is not configured."}), 500
+        return jsonify({"error": SUPABASE_CONFIG_MESSAGE}), 500
 
     files = request.files.getlist("uploadFiles")
     if not files:
