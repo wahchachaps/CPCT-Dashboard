@@ -17,6 +17,11 @@
                         <span class="brand-subtitle">Operations View</span>
                     </div>
                 </div>
+                <button class="sidebar-toggle" id="sidebarToggle" type="button" aria-label="Toggle sidebar" aria-expanded="true">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                </button>
             </div>
             <nav class="sidebar-nav">
                 <a href="#section-overview" class="nav-link">
@@ -174,7 +179,24 @@
                             </div>
                         </div>
                         <div class="upload-chart-status" id="annualKwStatus"></div>
-                        <canvas id="annualKwChart"></canvas>
+                        <div class="graph-row">
+                            <div class="graph-canvas">
+                                <canvas id="annualKwChart"></canvas>
+                            </div>
+                            <div class="uploaded-table-card chart-table">
+                                <div class="upload-table-wrap no-scroll">
+                                    <table class="upload-table" id="annualKwTable">
+                                        <thead>
+                                            <tr>
+                                                <th>Month</th>
+                                                <th>Peak (kW)</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="annualKwTableBody"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                     <div class="graph-card peak-load-card">
                         <div class="uploaded-data-head">

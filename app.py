@@ -748,43 +748,81 @@ def compute_kw_pivot_day_hour_max(xl, target_year=None, target_month=None):
 
 
 def compute_kw_hourly_payload(xl):
-    df, sheet, error = load_kw_sheet(xl)
-    if not error:
-        date_col, time_col, kw_col, col_error = get_kw_columns(df)
-        if not col_error:
-            date_series = pd.to_datetime(df[date_col], errors="coerce")
-            if not date_series.notna().any():
-                return None, "No usable data found for that month."
-
-            day_hour_max = {}
-            for idx, date_val in date_series.items():
-                if pd.isna(date_val):
-                    continue
-                hour, minute = parse_time_components(df.at[idx, time_col])
-                bucket = bucket_end_hour_kw(hour, minute)
-                if bucket is None:
-                    continue
-                num = pd.to_numeric(df.at[idx, kw_col], errors="coerce")
-                if pd.isna(num):
-                    continue
-                day = date_val.date()
-                day_map = day_hour_max.setdefault(day, {})
-                value = float(num)
-                current = day_map.get(bucket)
-                if current is None or value > current:
-                    day_map[bucket] = value
-
-            days = build_days_from_hour_map(day_hour_max)
-            if not days:
-                return None, "No usable data found for that month."
-            return {
-                "days": days,
-                "month_max": compute_hourly_max(days)
-            }, None
-
     day_hour_max, pivot_error = compute_kw_pivot_day_hour_max(xl)
-    if pivot_error:
-        return None, error or pivot_error
+    if not pivot_error:
+        days = build_days_from_hour_map(day_hour_max)
+        if not days:
+            return None, "No usable data found for that month."
+        return {
+            "days": days,
+            "month_max": compute_hourly_max(days)
+        }, None
+
+    df, sheet, error = load_kw_sheet(xl)
+    if error:
+        return None, pivot_error or error
+
+    date_col, time_col, kw_col, col_error = get_kw_columns(df)
+    if col_error:
+        return None, col_error
+
+    date_series = pd.to_datetime(df[date_col], errors="coerce")
+    if not date_series.notna().any():
+        return None, "No usable data found for that month."
+
+    sein_col = None
+    for col in df.columns:
+        if str(col).strip().upper() == "SEIN":
+            sein_col = col
+            break
+    has_multi_sein = False
+    if sein_col is not None:
+        try:
+            unique_sein = df[sein_col].dropna().unique()
+            has_multi_sein = len(unique_sein) > 1
+        except Exception:
+            has_multi_sein = False
+
+    day_hour_max = {}
+    if has_multi_sein:
+        summed_by_stamp = {}
+        for idx, date_val in date_series.items():
+            if pd.isna(date_val):
+                continue
+            hour, minute = parse_time_components(df.at[idx, time_col])
+            if hour is None or minute is None:
+                continue
+            num = pd.to_numeric(df.at[idx, kw_col], errors="coerce")
+            if pd.isna(num):
+                continue
+            key = (date_val.date(), hour, minute)
+            summed_by_stamp[key] = summed_by_stamp.get(key, 0.0) + float(num)
+
+        for (day, hour, minute), value in summed_by_stamp.items():
+            bucket = bucket_end_hour_kw(hour, minute)
+            if bucket is None:
+                continue
+            day_map = day_hour_max.setdefault(day, {})
+            current = day_map.get(bucket)
+            if current is None or value > current:
+                day_map[bucket] = value
+    else:
+        for idx, date_val in date_series.items():
+            if pd.isna(date_val):
+                continue
+            hour, minute = parse_time_components(df.at[idx, time_col])
+            bucket = bucket_end_hour_kw(hour, minute)
+            if bucket is None:
+                continue
+            num = pd.to_numeric(df.at[idx, kw_col], errors="coerce")
+            if pd.isna(num):
+                continue
+            day = date_val.date()
+            day_map = day_hour_max.setdefault(day, {})
+            value = float(num)
+            current = day_map.get(bucket)
+            if current is None or value > current:
+                day_map[bucket] = value
 
     days = build_days_from_hour_map(day_hour_max)
     if not days:

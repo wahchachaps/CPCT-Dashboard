@@ -189,6 +189,7 @@ input {
 .sidebar-head {
     display: flex;
     align-items: center;
+    justify-content: space-between;
     margin-bottom: 14px;
     padding: 2px 6px 10px;
     border-bottom: 1px solid #e5e7eb;
@@ -324,6 +325,70 @@ input {
     text-align: center;
     font-size: 0.73rem;
     color: #6b7280;
+}
+
+.sidebar-toggle {
+    border: 1px solid #e5e7eb;
+    background: #ffffff;
+    border-radius: 10px;
+    padding: 8px 10px;
+    display: inline-flex;
+    flex-direction: column;
+    gap: 3px;
+    cursor: pointer;
+    transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.sidebar-toggle span {
+    width: 16px;
+    height: 2px;
+    background: #374151;
+    border-radius: 999px;
+    display: block;
+}
+
+.sidebar-toggle:hover {
+    background: #f8fafc;
+    border-color: #d1d5db;
+}
+
+.dashboard-shell.is-collapsed .sidebar {
+    width: 78px;
+    padding: 18px 10px 14px;
+}
+
+.dashboard-shell.is-collapsed .main-content {
+    margin-left: 78px;
+}
+
+.dashboard-shell.is-collapsed .sidebar-brand,
+.dashboard-shell.is-collapsed .nav-text,
+.dashboard-shell.is-collapsed .sidebar-meta {
+    display: none;
+}
+
+.dashboard-shell.is-collapsed .sidebar-identity img,
+.dashboard-shell.is-collapsed .sidebar-logout {
+    display: none;
+}
+
+.dashboard-shell.is-collapsed .sidebar-identity {
+    justify-content: center;
+    width: 100%;
+}
+
+.dashboard-shell.is-collapsed .sidebar-identity img {
+    width: 42px;
+    height: 42px;
+}
+
+.dashboard-shell.is-collapsed .sidebar-nav a {
+    justify-content: center;
+}
+
+.dashboard-shell.is-collapsed .sidebar-logout {
+    font-size: 0.7rem;
+    padding: 6px 8px;
 }
 
 .main-content {
@@ -1018,6 +1083,11 @@ input {
     overflow: auto;
 }
 
+.upload-table-wrap.no-scroll {
+    max-height: none;
+    overflow: visible;
+}
+
 .upload-table {
     width: 100%;
     border-collapse: collapse;
@@ -1097,6 +1167,44 @@ input {
 
 .upload-chart-status.is-visible {
     display: block;
+}
+
+.chart-table {
+    margin-top: 12px;
+}
+
+.chart-table .upload-table-wrap {
+    max-height: 260px;
+}
+
+.graph-row {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+}
+
+.graph-row .graph-canvas {
+    flex: 1 1 60%;
+    min-width: 240px;
+}
+
+.graph-row .chart-table {
+    flex: 1 1 320px;
+    margin-top: 0;
+}
+
+.graph-row canvas {
+    height: 320px !important;
+}
+
+.graph-row .upload-table-wrap {
+    max-height: none;
+    overflow: visible;
+}
+
+.upload-table td.table-highlight-text {
+    background: #fde68a;
+    font-weight: 600;
 }
 
 .upload-form,
@@ -1295,6 +1403,10 @@ input {
         padding: 16px 14px;
     }
 
+    .sidebar-toggle {
+        display: none;
+    }
+
     .sidebar-nav {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
@@ -1338,6 +1450,20 @@ input {
         grid-template-columns: 1fr;
     }
 
+}
+
+@media (max-width: 1100px) {
+    .graph-row {
+        flex-direction: column;
+    }
+
+    .graph-row .chart-table {
+        flex: 1 1 auto;
+    }
+
+    .graph-row canvas {
+        height: 300px !important;
+    }
 }
 
 @media (max-width: 620px) {
