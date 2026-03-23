@@ -5,6 +5,37 @@
     let dashboardMap = null;
     let onMapPanelShown = null;
 
+    const loginSwitch = document.getElementById("loginSwitch");
+    const loginBulb = document.getElementById("loginBulb");
+    const loginBox = document.getElementById("loginBox");
+    if (loginSwitch && loginBulb && loginBox) {
+        const errorText = document.querySelector(".error-text");
+        const hasError = errorText && errorText.textContent && errorText.textContent.trim().length > 0;
+        const applyState = function (on) {
+            loginSwitch.classList.toggle("on", on);
+            loginBulb.classList.toggle("on", on);
+            loginBox.classList.toggle("is-off", !on);
+            loginBox.setAttribute("aria-hidden", on ? "false" : "true");
+            if (document.body && document.body.classList) {
+                document.body.classList.toggle("is-off", !on);
+            }
+        };
+        applyState(hasError);
+
+        const togglePower = function () {
+            const isOn = loginSwitch.classList.contains("on");
+            applyState(!isOn);
+        };
+
+        loginSwitch.addEventListener("click", togglePower);
+        loginSwitch.addEventListener("keydown", function (event) {
+            if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                togglePower();
+            }
+        });
+    }
+
     function registerChart(chart) {
         dashboardCharts.push(chart);
         return chart;

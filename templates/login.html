@@ -7,8 +7,12 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body class="login-page">
+    <div class="login-switch" id="loginSwitch" role="button" tabindex="0" aria-label="Toggle power"></div>
+    <div class="login-bulb" id="loginBulb">
+        <div class="login-filament"></div>
+    </div>
     <div class="login-container">
-        <div class="login-box">
+        <div class="login-box{% if not error %} is-off{% endif %}" id="loginBox">
             <img src="{{ url_for('static', filename='imgs/aleco.png') }}" class="logo" alt="ALECO logo">
             <h2>Welcome Back</h2>
             <h3>CPCT Login Portal</h3>
@@ -32,5 +36,6 @@
             {% endif %}
         </div>
     </div>
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
 </body>
 </html>
