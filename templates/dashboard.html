@@ -137,7 +137,7 @@
                         <div class="uploaded-data-head">
                             <div>
                                 <h3>Hourly Loading (kW)</h3>
-                                <p class="upload-help">Hourly demand taken as the maximum 5-minute kW value per hour for the selected day. Choose All days to show the maximum hourly demand across the month.</p>
+                                <p class="upload-help">Hourly demand is the maximum 5-minute kW value per hour (HH:05–HH:00) for the selected day. Choose All days to show the maximum hourly demand across the month.</p>
                             </div>
                             <div class="upload-filter">
                                 <label for="hourlyKwMonthSelect">Month</label>
@@ -179,7 +179,7 @@
                     <div class="graph-card peak-load-card">
                         <div class="uploaded-data-head">
                             <div>
-                                <h3>Peak Load (Uploaded)</h3>
+                                <h3>Peak Load</h3>
                                 <p class="upload-help">Peak Load, kW pulled from the EDD sheet (row 58) for each uploaded month.</p>
                             </div>
                             <div class="upload-filter">
@@ -369,7 +369,7 @@
                     <div class="upload-grid">
                         <form class="upload-form" action="{{ url_for('upload_file') }}" method="POST" enctype="multipart/form-data">
                             <div class="upload-warning">
-                                Upload raw Excel or CSV data only. Avoid formatted reports, merged cells, or pivot tables.
+                                Upload Excel exports only. For kW, set the Pivot Values field to KW_DEL (not KWH_DEL) before exporting.
                             </div>
                             {% if upload_error == "in_use" %}
                                 <div class="upload-error is-visible">
@@ -378,7 +378,8 @@
                             {% endif %}
                             <label for="uploadCategory">File Type</label>
                             <select id="uploadCategory" name="uploadCategory">
-                                <option value="hourly">Hourly Loading (kWh)</option>
+                                <option value="hourly_kwh">Hourly Loading (kWh)</option>
+                                <option value="hourly_kw">Hourly Loading (kW)</option>
                                 <option value="edd">EDD Report</option>
                                 <option value="other">Other</option>
                             </select>
@@ -388,7 +389,7 @@
                                 <p class="upload-selected-empty" id="uploadSelectedEmpty">No files selected.</p>
                                 <ul class="upload-selected-list" id="uploadSelectedList"></ul>
                             </div>
-                            <p class="upload-help">Tip: Use names like "EDD as of January 2026" so files sort into the right year.</p>
+                            <p class="upload-help">Tip: Use names like "January 2026 KWH" or "January 2026 KW" so files sort into the right year and chart.</p>
                             <div class="upload-error" id="uploadError" role="alert" aria-live="polite"></div>
                             <div class="upload-actions">
                                 <button type="submit" class="primary-btn" id="uploadSubmit" disabled>Upload Data</button>

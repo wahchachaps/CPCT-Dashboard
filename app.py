@@ -56,6 +56,14 @@ SUPABASE_CONFIG_MESSAGE = (
     "Supabase is not configured on the server. "
     "Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY."
 )
+KW_DEL_REQUIRED_MESSAGE = (
+    "KW_DEL data columns not found. Switch the Pivot Field List values to KW_DEL "
+    "(not KWH_DEL) before exporting the file."
+)
+KW_DEL_REUPLOAD_MESSAGE = (
+    "No kW data found for this file. Switch the Pivot Field List values to KW_DEL "
+    "(not KWH_DEL) and re-upload the file."
+)
 ALLOWED_EXTENSIONS = {".xlsx", ".xls", ".csv"}
 MONTH_ALIASES = [
     ("january", 1), ("jan", 1),
@@ -78,7 +86,9 @@ MONTH_NAMES = [
 
 CATEGORY_OPTIONS = {
     "edd": "EDD Report",
-    "hourly": "Hourly Loading",
+    "hourly": "Hourly Loading (Legacy)",
+    "hourly_kwh": "Hourly Loading (kWh)",
+    "hourly_kw": "Hourly Loading (kW)",
     "other": "Other"
 }
 
@@ -364,7 +374,7 @@ def build_bootstrap_payload():
         "upload_groups": build_upload_groups(uploads),
         "recent_uploads": build_recent_uploads(uploads),
         "upload_months": build_upload_months(uploads),
-        "upload_months_hourly": build_upload_months(uploads, category="hourly")
+        "upload_months_hourly": build_upload_months(uploads, category="hourly_kwh")
     }
 
 
@@ -372,8 +382,14 @@ def infer_category_from_name(name):
     lowered = str(name or "").lower()
     if "edd" in lowered:
         return "edd"
-    if "energy" in lowered or "cp" in lowered or "kw" in lowered:
-        return "hourly"
+    if re.search(r"\bkwh\b", lowered):
+        return "hourly_kwh"
+    if re.search(r"\bkw\b", lowered):
+        return "hourly_kw"
+    if "energy" in lowered or "cp" in lowered:
+        return "hourly_kwh"
+    if "hourly" in lowered:
+        return "hourly_kwh"
     return "other"
 
 
@@ -382,6 +398,37 @@ def get_entry_category(entry):
     if category in CATEGORY_OPTIONS:
         return category
     return infer_category_from_name(entry.get("original_name", ""))
+
+
+def is_hourly_kwh_entry(entry):
+    category = (entry.get("category") or "").strip().lower()
+    if category in ("hourly_kwh", "hourly"):
+        return True
+    if category == "hourly_kw":
+        return False
+    inferred = infer_category_from_name(entry.get("original_name", ""))
+    return inferred in ("hourly_kwh", "hourly")
+
+
+def is_hourly_kw_entry(entry):
+    category = (entry.get("category") or "").strip().lower()
+    if category in ("hourly_kw", "hourly"):
+        return True
+    if category == "hourly_kwh":
+        return False
+    inferred = infer_category_from_name(entry.get("original_name", ""))
+    return inferred in ("hourly_kw",)
+
+
+def entry_matches_category(entry, category):
+    if not category:
+        return True
+    normalized = category.strip().lower()
+    if normalized == "hourly_kwh":
+        return is_hourly_kwh_entry(entry)
+    if normalized == "hourly_kw":
+        return is_hourly_kw_entry(entry)
+    return get_entry_category(entry) == normalized
 
 
 def get_entry_data(entry):
@@ -442,6 +489,15 @@ def normalize_hourly_payload(entry):
         "cp": cp_payload,
         "kw": kw_payload
     }
+
+
+def get_kw_days_map(entry):
+    hourly = normalize_hourly_payload(entry)
+    kw_payload = hourly.get("kw") or {}
+    days_map = kw_payload.get("days")
+    if not isinstance(days_map, dict) or not days_map:
+        return None, KW_DEL_REUPLOAD_MESSAGE
+    return days_map, None
 
 
 def build_hour_labels():
@@ -573,36 +629,162 @@ def compute_cp_hourly_payload(xl):
     }, None
 
 
-def compute_kw_hourly_payload(xl):
-    df, sheet, error = load_kw_sheet(xl)
-    if error:
-        return None, error
+def find_pivot_header_row(df):
+    for i in range(len(df)):
+        row = df.iloc[i]
+        if any(isinstance(x, str) and "row labels" in x.lower() for x in row.tolist() if pd.notna(x)):
+            return i
+    return None
 
-    date_col, time_col, kw_col, col_error = get_kw_columns(df)
-    if col_error:
-        return None, col_error
 
-    date_series = pd.to_datetime(df[date_col], errors="coerce")
-    if not date_series.notna().any():
-        return None, "No usable data found for that month."
+def _score_kw_measure_tokens(preview):
+    score = 0
+    for val in preview.values.flatten():
+        if pd.isna(val):
+            continue
+        text = str(val).upper()
+        if "KWH_DEL" in text:
+            score -= 5
+        if "KW_DEL" in text and "KWH_DEL" not in text:
+            score += 5
+    return score
+
+
+def find_hourly_pivot_sheet(xl, target_year=None, target_month=None, prefer_kw=False):
+    candidates = []
+    for sheet in xl.sheet_names:
+        preview = xl.parse(sheet, header=None, nrows=40)
+        header_idx = find_pivot_header_row(preview)
+        if header_idx is None:
+            continue
+        header_row = preview.iloc[header_idx]
+        date_columns = []
+        for idx, val in enumerate(header_row.tolist()):
+            if idx == 0 or pd.isna(val):
+                continue
+            try:
+                parsed = val if isinstance(val, pd.Timestamp) else pd.to_datetime(val, errors="coerce")
+            except Exception:
+                parsed = None
+            if parsed is not None and pd.notna(parsed):
+                date_columns.append(idx)
+        if not date_columns:
+            continue
+        score = _score_kw_measure_tokens(preview)
+        lower = sheet.lower()
+        if "kwh" in lower:
+            score -= 2
+        elif "kw" in lower:
+            score += 2
+        if "demand" in lower:
+            score += 1
+        if match_month_in_name(sheet, target_year, target_month):
+            score += 1
+        candidates.append((sheet, header_idx, len(date_columns), score))
+
+    if not candidates:
+        return None, None
+
+    if prefer_kw:
+        sheet, header_idx, _, _ = max(candidates, key=lambda item: (item[3], item[2]))
+        return sheet, header_idx
+
+    for sheet, header_idx, _, _ in candidates:
+        if match_month_in_name(sheet, target_year, target_month):
+            return sheet, header_idx
+
+    for sheet, header_idx, _, _ in candidates:
+        lowered = sheet.lower()
+        if "cp" in lowered or "energy" in lowered:
+            return sheet, header_idx
+
+    sheet, header_idx, _, _ = max(candidates, key=lambda item: item[2])
+    return sheet, header_idx
+
+
+def compute_kw_pivot_day_hour_max(xl, target_year=None, target_month=None):
+    sheet, header_idx = find_hourly_pivot_sheet(xl, target_year, target_month, prefer_kw=True)
+    if not sheet:
+        return None, "Hourly Loading pivot data not found."
+
+    df = xl.parse(sheet, header=None)
+    header_row = df.iloc[header_idx]
+    date_columns = []
+    for idx, val in enumerate(header_row.tolist()):
+        if idx == 0 or pd.isna(val):
+            continue
+        try:
+            parsed = val if isinstance(val, pd.Timestamp) else pd.to_datetime(val, errors="coerce")
+        except Exception:
+            parsed = None
+        if parsed is not None and pd.notna(parsed):
+            date_columns.append((idx, parsed.date()))
+
+    if not date_columns:
+        return None, "No matching dates found for that month."
 
     day_hour_max = {}
-    for idx, date_val in date_series.items():
-        if pd.isna(date_val):
-            continue
-        hour, minute = parse_time_components(df.at[idx, time_col])
-        bucket = bucket_end_hour(hour, minute)
+    data_rows = df.iloc[header_idx + 1:]
+    for _, row in data_rows.iterrows():
+        time_val = row.iloc[0]
+        hour, minute = parse_time_components(time_val)
+        bucket = bucket_end_hour_kw(hour, minute)
         if bucket is None:
             continue
-        num = pd.to_numeric(df.at[idx, kw_col], errors="coerce")
-        if pd.isna(num):
-            continue
-        day = date_val.date()
-        day_map = day_hour_max.setdefault(day, {})
-        value = float(num)
-        current = day_map.get(bucket)
-        if current is None or value > current:
-            day_map[bucket] = value
+        for col_idx, day in date_columns:
+            val = row.iloc[col_idx] if col_idx < len(row) else None
+            num = pd.to_numeric(val, errors="coerce")
+            if pd.notna(num):
+                day_map = day_hour_max.setdefault(day, {})
+                value = float(num)
+                current = day_map.get(bucket)
+                if current is None or value > current:
+                    day_map[bucket] = value
+
+    if not day_hour_max:
+        return None, "No usable data found for that month."
+
+    return day_hour_max, None
+
+
+def compute_kw_hourly_payload(xl):
+    df, sheet, error = load_kw_sheet(xl)
+    if not error:
+        date_col, time_col, kw_col, col_error = get_kw_columns(df)
+        if not col_error:
+            date_series = pd.to_datetime(df[date_col], errors="coerce")
+            if not date_series.notna().any():
+                return None, "No usable data found for that month."
+
+            day_hour_max = {}
+            for idx, date_val in date_series.items():
+                if pd.isna(date_val):
+                    continue
+                hour, minute = parse_time_components(df.at[idx, time_col])
+                bucket = bucket_end_hour_kw(hour, minute)
+                if bucket is None:
+                    continue
+                num = pd.to_numeric(df.at[idx, kw_col], errors="coerce")
+                if pd.isna(num):
+                    continue
+                day = date_val.date()
+                day_map = day_hour_max.setdefault(day, {})
+                value = float(num)
+                current = day_map.get(bucket)
+                if current is None or value > current:
+                    day_map[bucket] = value
+
+            days = build_days_from_hour_map(day_hour_max)
+            if not days:
+                return None, "No usable data found for that month."
+            return {
+                "days": days,
+                "month_max": compute_hourly_max(days)
+            }, None
+
+    day_hour_max, pivot_error = compute_kw_pivot_day_hour_max(xl)
+    if pivot_error:
+        return None, error or pivot_error
 
     days = build_days_from_hour_map(day_hour_max)
     if not days:
@@ -730,7 +912,7 @@ def extract_peak_load_from_xl(xl):
 
 def precompute_upload_data(file_bytes, filename, category):
     ext = os.path.splitext(filename)[1].lower()
-    if ext == ".csv" and category in ("hourly", "edd"):
+    if ext == ".csv" and category in ("hourly", "hourly_kwh", "hourly_kw", "edd"):
         return None, "This chart requires an Excel file."
     try:
         xl = pd.ExcelFile(BytesIO(file_bytes))
@@ -749,6 +931,30 @@ def precompute_upload_data(file_bytes, filename, category):
             "hourly": {
                 "labels": labels,
                 "cp": cp_payload,
+                "kw": kw_payload
+            }
+        }, None
+    if category == "hourly_kwh":
+        labels = build_hour_labels()
+        cp_payload, cp_error = compute_cp_hourly_payload(xl)
+        if cp_error:
+            return None, cp_error
+        return {
+            "hourly": {
+                "labels": labels,
+                "cp": cp_payload,
+                "kw": {}
+            }
+        }, None
+    if category == "hourly_kw":
+        labels = build_hour_labels()
+        kw_payload, kw_error = compute_kw_hourly_payload(xl)
+        if kw_error:
+            return None, kw_error
+        return {
+            "hourly": {
+                "labels": labels,
+                "cp": {},
                 "kw": kw_payload
             }
         }, None
@@ -771,7 +977,7 @@ def precompute_upload_data(file_bytes, filename, category):
 def build_upload_months(entries, category=None):
     enriched = []
     for entry in entries:
-        if category and get_entry_category(entry) != category:
+        if category and not entry_matches_category(entry, category):
             continue
         item = dict(entry)
         item["display_name"] = os.path.splitext(item.get("original_name", ""))[0] or item.get("stored_name", "")
@@ -876,8 +1082,11 @@ def match_month_in_name(name, target_year=None, target_month=None):
 def find_kw_header_row(df):
     for i in range(min(len(df), 12)):
         row = df.iloc[i]
-        tokens = {str(val).strip().upper() for val in row.tolist() if pd.notna(val)}
-        if "KW_DEL" in tokens and "TIME" in tokens and ("BDATE" in tokens or "DATE" in tokens):
+        tokens = [str(val).strip().upper() for val in row.tolist() if pd.notna(val)]
+        has_kw = any("KW_DEL" in token for token in tokens)
+        has_time = any(token == "TIME" or "TIME" in token for token in tokens)
+        has_date = any(token in ("BDATE", "DATE") or "BDATE" in token or token == "DATE" for token in tokens)
+        if has_kw and has_time and has_date:
             return i
     return None
 
@@ -931,8 +1140,13 @@ def get_kw_columns(df):
     date_col = columns.get("BDATE") or columns.get("DATE")
     time_col = columns.get("TIME")
     kw_col = columns.get("KW_DEL")
+    if not kw_col:
+        for key, col in columns.items():
+            if "KW_DEL" in key:
+                kw_col = col
+                break
     if not date_col or not time_col or not kw_col:
-        return None, None, None, "KW_DEL data columns not found. Make sure the pivot table uses KW_DEL in the Values field."
+        return None, None, None, KW_DEL_REQUIRED_MESSAGE
     return date_col, time_col, kw_col, None
 
 
@@ -1068,6 +1282,14 @@ def bucket_end_hour(hour, minute):
     if hour is None or minute is None:
         return None
     if minute == 0:
+        return hour
+    return (hour + 1) % 24
+
+
+def bucket_end_hour_kw(hour, minute):
+    if hour is None or minute is None:
+        return None
+    if minute < 5:
         return hour
     return (hour + 1) % 24
 
@@ -1469,7 +1691,7 @@ def extract_kw_hourly_day_data(file_path, target_year, target_month, target_day)
         if pd.isna(date_val):
             continue
         hour, minute = parse_time_components(df.at[idx, time_col])
-        bucket = bucket_end_hour(hour, minute)
+        bucket = bucket_end_hour_kw(hour, minute)
         if bucket is None:
             continue
         num = pd.to_numeric(df.at[idx, kw_col], errors="coerce")
@@ -1530,7 +1752,7 @@ def extract_kw_hourly_month_max(file_path, target_year=None, target_month=None, 
         if pd.isna(date_val):
             continue
         hour, minute = parse_time_components(df.at[idx, time_col])
-        bucket = bucket_end_hour(hour, minute)
+        bucket = bucket_end_hour_kw(hour, minute)
         if bucket is None:
             continue
         num = pd.to_numeric(df.at[idx, kw_col], errors="coerce")
@@ -1659,7 +1881,7 @@ def build_peak_load_year_payload(entries, year):
 def build_hourly_year_payload(entries, year):
     month_entries = {}
     for entry in entries:
-        if get_entry_category(entry) != "hourly":
+        if not is_hourly_kwh_entry(entry):
             continue
         entry_year = entry.get("year")
         entry_month = entry.get("month")
@@ -1703,7 +1925,7 @@ def build_hourly_year_payload(entries, year):
 def build_kw_annual_payload(entries, year, peak_type="highest"):
     month_entries = {}
     for entry in entries:
-        if get_entry_category(entry) != "hourly":
+        if not is_hourly_kw_entry(entry):
             continue
         entry_year = entry.get("year")
         entry_month = entry.get("month")
@@ -1749,7 +1971,7 @@ def build_kw_annual_payload(entries, year, peak_type="highest"):
 def build_year_options(entries, category=None):
     years = set()
     for entry in entries:
-        if category and get_entry_category(entry) != category:
+        if category and not entry_matches_category(entry, category):
             continue
         entry_year = entry.get("year")
         if not entry_year:
@@ -1804,7 +2026,7 @@ def dashboard():
     upload_groups = build_upload_groups(uploads)
     recent_uploads = build_recent_uploads(uploads)
     upload_months = build_upload_months(uploads)
-    upload_months_hourly = build_upload_months(uploads, category="hourly")
+    upload_months_hourly = build_upload_months(uploads, category="hourly_kwh")
     upload_error = request.args.get("upload_error", "")
     return render_template(
         "dashboard.html",
@@ -1987,7 +2209,7 @@ def data_endpoint():
         "upload_groups": build_upload_groups(entries_meta),
         "recent_uploads": build_recent_uploads(entries_meta),
         "upload_months": build_upload_months(entries_meta),
-        "upload_months_hourly": build_upload_months(entries_meta, category="hourly")
+        "upload_months_hourly": build_upload_months(entries_meta, category="hourly_kwh")
     }
     payload["username"] = session.get("user_email", "")
     return jsonify(payload)
@@ -2123,7 +2345,7 @@ def edd_hourly_kw_years():
     if not get_current_user():
         return jsonify({"error": "Unauthorized"}), 401
     entries = load_manifest()
-    years = build_year_options(entries, category="hourly")
+    years = build_year_options(entries, category="hourly_kw")
     return jsonify({"years": years})
 
 
@@ -2282,7 +2504,7 @@ def edd_hourly_months():
     entries = load_manifest(include_data=True)
     items = []
     for entry in entries:
-        if get_entry_category(entry) != "hourly":
+        if not is_hourly_kwh_entry(entry):
             continue
         hourly = normalize_hourly_payload(entry)
         cp_payload = hourly.get("cp") or {}
@@ -2317,12 +2539,10 @@ def edd_hourly_kw_months():
     entries = load_manifest(include_data=True)
     items = []
     for entry in entries:
-        if get_entry_category(entry) != "hourly":
+        if not is_hourly_kw_entry(entry):
             continue
-        hourly = normalize_hourly_payload(entry)
-        kw_payload = hourly.get("kw") or {}
-        days_map = kw_payload.get("days") or {}
-        if not days_map:
+        days_map, error = get_kw_days_map(entry)
+        if error:
             continue
         date_values = [parse_iso_date(key) for key in days_map.keys()]
         date_values = [val for val in date_values if val]
@@ -2355,11 +2575,9 @@ def edd_hourly_kw_days(upload_id):
 
     start_date = parse_iso_date(request.args.get("start"))
     end_date = parse_iso_date(request.args.get("end"))
-    hourly = normalize_hourly_payload(entry)
-    kw_payload = hourly.get("kw") or {}
-    days_map = kw_payload.get("days") or {}
-    if not days_map:
-        return jsonify({"error": "No cached data found for this file. Please re-upload it."}), 400
+    days_map, error = get_kw_days_map(entry)
+    if error:
+        return jsonify({"error": error}), 400
     filtered = filter_days_map(days_map, start_date, end_date)
     dates = sorted(filtered.keys())
     if not dates:
@@ -2392,11 +2610,9 @@ def edd_hourly_kw_day(upload_id, day):
 
     if not entry_year or not entry_month:
         return jsonify({"error": "Unable to detect month for this file."}), 400
-    hourly = normalize_hourly_payload(entry)
-    kw_payload = hourly.get("kw") or {}
-    days_map = kw_payload.get("days") or {}
-    if not days_map:
-        return jsonify({"error": "No cached data found for this file. Please re-upload it."}), 400
+    days_map, error = get_kw_days_map(entry)
+    if error:
+        return jsonify({"error": error}), 400
     date_key = f"{entry_year:04d}-{entry_month:02d}-{day:02d}"
     values = days_map.get(date_key)
     if not values:
@@ -2423,11 +2639,9 @@ def edd_hourly_kw_day_by_date(upload_id):
     target_date = parse_iso_date(date_str)
     if not target_date:
         return jsonify({"error": "Date is required in YYYY-MM-DD format."}), 400
-    hourly = normalize_hourly_payload(entry)
-    kw_payload = hourly.get("kw") or {}
-    days_map = kw_payload.get("days") or {}
-    if not days_map:
-        return jsonify({"error": "No cached data found for this file. Please re-upload it."}), 400
+    days_map, error = get_kw_days_map(entry)
+    if error:
+        return jsonify({"error": error}), 400
     date_key = format_date_ymd(target_date)
     values = days_map.get(date_key)
     if not values:
@@ -2459,9 +2673,9 @@ def edd_hourly_kw_month(upload_id):
 
     hourly = normalize_hourly_payload(entry)
     kw_payload = hourly.get("kw") or {}
-    days_map = kw_payload.get("days") or {}
-    if not days_map:
-        return jsonify({"error": "No cached data found for this file. Please re-upload it."}), 400
+    days_map, error = get_kw_days_map(entry)
+    if error:
+        return jsonify({"error": error}), 400
 
     filtered = filter_days_map(days_map, start_date, end_date) if start_date and end_date else days_map
     values = kw_payload.get("month_max") if not (start_date and end_date) else compute_hourly_max(filtered)

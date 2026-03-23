@@ -3058,14 +3058,18 @@
             const endpoint = day === "all"
                 ? `/api/edd-hourly-month/${parsed.id}?start=${parsed.start}&end=${parsed.end}`
                 : `/api/edd-hourly-day/${parsed.id}?date=${day}`;
-            fetch(endpoint)
-                .then(function (response) { return response.json(); })
-                .then(function (payload) {
-                    if (payload && payload.error) {
+            fetchJson(endpoint)
+                .then(function (result) {
+                    const payload = result.payload || {};
+                    if (!result.ok) {
+                        setStatus(payload.error || "Unable to load chart data.");
+                        return;
+                    }
+                    if (payload.error) {
                         setStatus(payload.error);
                         return;
                     }
-                    if (!payload || !payload.labels || payload.labels.length === 0) {
+                    if (!payload.labels || payload.labels.length === 0) {
                         setStatus("No usable data found.");
                         return;
                     }
@@ -3093,10 +3097,15 @@
                 }
                 return;
             }
-            fetch(`/api/edd-hourly-days/${parsed.id}?start=${parsed.start}&end=${parsed.end}`)
-                .then(function (response) { return response.json(); })
-                .then(function (payload) {
-                    if (payload && payload.error) {
+            fetchJson(`/api/edd-hourly-days/${parsed.id}?start=${parsed.start}&end=${parsed.end}`)
+                .then(function (result) {
+                    const payload = result.payload || {};
+                    if (!result.ok) {
+                        setStatus(payload.error || "Unable to load available days.");
+                        populateDays([]);
+                        return;
+                    }
+                    if (payload.error) {
                         setStatus(payload.error);
                         populateDays([]);
                         return;
@@ -3151,9 +3160,18 @@
             loading.textContent = "Loading months...";
             monthSelect.appendChild(loading);
 
-            fetch("/api/edd-hourly-months")
-                .then(function (response) { return response.json(); })
-                .then(function (payload) {
+            fetchJson("/api/edd-hourly-months")
+                .then(function (result) {
+                    const payload = result.payload || {};
+                    if (!result.ok) {
+                        monthSelect.innerHTML = "";
+                        const option = document.createElement("option");
+                        option.value = "";
+                        option.textContent = "Unable to load months";
+                        monthSelect.appendChild(option);
+                        populateDays([]);
+                        return;
+                    }
                     const items = payload.items || [];
                     monthItems = items;
                     if (items.length === 0) {
@@ -3326,14 +3344,18 @@
             const endpoint = day === "all"
                 ? `/api/edd-hourly-kw-month/${parsed.id}?start=${parsed.start}&end=${parsed.end}`
                 : `/api/edd-hourly-kw-day/${parsed.id}?date=${day}`;
-            fetch(endpoint)
-                .then(function (response) { return response.json(); })
-                .then(function (payload) {
-                    if (payload && payload.error) {
+            fetchJson(endpoint)
+                .then(function (result) {
+                    const payload = result.payload || {};
+                    if (!result.ok) {
+                        setStatus(payload.error || "Unable to load chart data.");
+                        return;
+                    }
+                    if (payload.error) {
                         setStatus(payload.error);
                         return;
                     }
-                    if (!payload || !payload.labels || payload.labels.length === 0) {
+                    if (!payload.labels || payload.labels.length === 0) {
                         setStatus("No usable data found.");
                         return;
                     }
@@ -3361,10 +3383,15 @@
                 }
                 return;
             }
-            fetch(`/api/edd-hourly-kw-days/${parsed.id}?start=${parsed.start}&end=${parsed.end}`)
-                .then(function (response) { return response.json(); })
-                .then(function (payload) {
-                    if (payload && payload.error) {
+            fetchJson(`/api/edd-hourly-kw-days/${parsed.id}?start=${parsed.start}&end=${parsed.end}`)
+                .then(function (result) {
+                    const payload = result.payload || {};
+                    if (!result.ok) {
+                        setStatus(payload.error || "Unable to load available days.");
+                        populateDays([]);
+                        return;
+                    }
+                    if (payload.error) {
                         setStatus(payload.error);
                         populateDays([]);
                         return;
@@ -3419,9 +3446,18 @@
             loading.textContent = "Loading months...";
             monthSelect.appendChild(loading);
 
-            fetch("/api/edd-hourly-kw-months")
-                .then(function (response) { return response.json(); })
-                .then(function (payload) {
+            fetchJson("/api/edd-hourly-kw-months")
+                .then(function (result) {
+                    const payload = result.payload || {};
+                    if (!result.ok) {
+                        monthSelect.innerHTML = "";
+                        const option = document.createElement("option");
+                        option.value = "";
+                        option.textContent = "Unable to load months";
+                        monthSelect.appendChild(option);
+                        populateDays([]);
+                        return;
+                    }
                     const items = payload.items || [];
                     monthItems = items;
                     if (items.length === 0) {
