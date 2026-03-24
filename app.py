@@ -356,7 +356,7 @@ def build_upload_groups(entries):
     return [{"year": key, "items": groups[key]} for key in year_keys]
 
 
-def build_recent_uploads(entries, limit=6):
+def build_recent_uploads(entries, limit=3):
     enriched = []
     for entry in entries:
         item = dict(entry)

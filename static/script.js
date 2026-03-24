@@ -214,7 +214,7 @@
         setTimeout(function () {
             resizeDashboardCharts();
         }, 90);
-        if (sectionId === "section-map" && dashboardMap) {
+        if ((sectionId === "section-system-data" || sectionId === "section-map") && dashboardMap) {
             setTimeout(function () {
                 dashboardMap.invalidateSize();
                 if (onMapPanelShown) {
@@ -2335,11 +2335,52 @@
         errorBox.classList.toggle("is-visible", !!message);
     }
 
+    function normalizeUploadCategory(value) {
+        const cleaned = String(value || "").trim().toLowerCase();
+        if (!cleaned) return "";
+        if (cleaned === "hourly") return "hourly_kwh";
+        if (cleaned === "hourly_kwh" || cleaned === "hourly_kw" || cleaned === "edd" || cleaned === "other") {
+            return cleaned;
+        }
+        return cleaned;
+    }
+
+    function inferUploadCategoryFromName(name) {
+        const lowered = String(name || "").toLowerCase();
+        if (lowered.includes("edd")) {
+            return "edd";
+        }
+        if (/\bkwh\b/.test(lowered)) {
+            return "hourly_kwh";
+        }
+        if (/\bkw\b/.test(lowered)) {
+            return "hourly_kw";
+        }
+        if (lowered.includes("hourly")) {
+            return "hourly_kwh";
+        }
+        return "other";
+    }
+
+    function getUploadCategory(item) {
+        if (!item) return "other";
+        const normalized = normalizeUploadCategory(item.category);
+        if (normalized) {
+            return normalized;
+        }
+        const name = item.original_name || item.display_name || item.stored_name || "";
+        return inferUploadCategoryFromName(name);
+    }
+
     function buildUploadItem(item) {
         const listItem = document.createElement("li");
         listItem.className = "upload-item";
         if (item && item.id) {
             listItem.setAttribute("data-upload-id", item.id);
+        }
+        const category = getUploadCategory(item);
+        if (category) {
+            listItem.setAttribute("data-category", category);
         }
 
         const meta = document.createElement("div");
@@ -2375,7 +2416,7 @@
         const empty = document.getElementById("recentUploadsEmpty");
         if (!list) return;
         list.innerHTML = "";
-        const rows = Array.isArray(items) ? items : [];
+        const rows = Array.isArray(items) ? items.slice(0, 3) : [];
         rows.forEach(function (item) {
             list.appendChild(buildUploadItem(item));
         });
@@ -2490,6 +2531,9 @@
         renderAllUploads(groups);
         renderUploadYearFilter(groups);
         renderPeakYearSelect(groups);
+        if (typeof window.applyUploadFilters === "function") {
+            window.applyUploadFilters();
+        }
     }
 
     function loadBootstrap() {
@@ -2667,18 +2711,67 @@
     }
 
     function initUploadFilter() {
-        const filter = document.getElementById("uploadYearFilter");
-        if (!filter) return;
+        const yearFilter = document.getElementById("uploadYearFilter");
+        const typeFilter = document.getElementById("uploadTypeFilter");
+        if (!yearFilter && !typeFilter) return;
+
         function applyFilter() {
-            const value = filter.value;
+            const yearValue = yearFilter ? yearFilter.value : "all";
+            const typeValue = typeFilter ? typeFilter.value : "all";
             const groups = Array.from(document.querySelectorAll(".upload-year-group"));
+            let anyVisible = false;
+
             groups.forEach(function (group) {
                 const year = group.getAttribute("data-year");
-                const visible = value === "all" || value === year;
+                let groupHasVisible = false;
+                const items = Array.from(group.querySelectorAll(".upload-item"));
+                items.forEach(function (item) {
+                    const itemType = normalizeUploadCategory(item.getAttribute("data-category"));
+                    const matchesType = typeValue === "all" || itemType === typeValue;
+                    item.style.display = matchesType ? "" : "none";
+                    if (matchesType) {
+                        groupHasVisible = true;
+                    }
+                });
+                const matchesYear = yearValue === "all" || yearValue === year;
+                const visible = matchesYear && groupHasVisible;
                 group.style.display = visible ? "" : "none";
+                if (visible) {
+                    anyVisible = true;
+                }
             });
+
+            const allEmpty = document.getElementById("allUploadsEmpty");
+            if (allEmpty) {
+                allEmpty.style.display = anyVisible ? "none" : "block";
+            }
+
+            const recentList = document.getElementById("recentUploadsList");
+            const recentEmpty = document.getElementById("recentUploadsEmpty");
+            if (recentList) {
+                const recentItems = Array.from(recentList.querySelectorAll(".upload-item"));
+                let visibleRecent = 0;
+                recentItems.forEach(function (item) {
+                    const itemType = normalizeUploadCategory(item.getAttribute("data-category"));
+                    const matchesType = typeValue === "all" || itemType === typeValue;
+                    item.style.display = matchesType ? "" : "none";
+                    if (matchesType) {
+                        visibleRecent += 1;
+                    }
+                });
+                if (recentEmpty) {
+                    recentEmpty.style.display = visibleRecent === 0 ? "block" : "none";
+                }
+            }
         }
-        filter.addEventListener("change", applyFilter);
+
+        if (yearFilter) {
+            yearFilter.addEventListener("change", applyFilter);
+        }
+        if (typeFilter) {
+            typeFilter.addEventListener("change", applyFilter);
+        }
+        window.applyUploadFilters = applyFilter;
         applyFilter();
     }
 
