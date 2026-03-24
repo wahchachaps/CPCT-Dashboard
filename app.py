@@ -535,6 +535,75 @@ def compute_hourly_max(days_map):
     return max_values
 
 
+def compute_hourly_min(days_map):
+    if not days_map:
+        return []
+    min_values = []
+    for hour in range(24):
+        min_value = None
+        for series in days_map.values():
+            if not isinstance(series, list) or hour >= len(series):
+                continue
+            value = series[hour]
+            if isinstance(value, (int, float)):
+                min_value = value if min_value is None else min(min_value, value)
+        min_values.append(float(min_value or 0))
+    return min_values
+
+
+def find_peak_day_hour(days_map, peak_type="highest"):
+    if not days_map:
+        return None, None, None
+    normalized_peak = (peak_type or "highest").strip().lower()
+    if normalized_peak not in ("lowest", "highest"):
+        normalized_peak = "highest"
+    best_value = None
+    best_day = None
+    best_hour = None
+    considered_any = False
+    for day_key, series in days_map.items():
+        if not isinstance(series, list):
+            continue
+        for hour, value in enumerate(series):
+            if not isinstance(value, (int, float)):
+                continue
+            if normalized_peak == "lowest" and value <= 0:
+                continue
+            considered_any = True
+            if best_value is None:
+                best_value = float(value)
+                best_day = day_key
+                best_hour = hour
+                continue
+            if normalized_peak == "highest":
+                if value > best_value:
+                    best_value = float(value)
+                    best_day = day_key
+                    best_hour = hour
+            else:
+                if value < best_value:
+                    best_value = float(value)
+                    best_day = day_key
+                    best_hour = hour
+    if considered_any:
+        return best_day, best_hour, best_value
+
+    best_value = None
+    best_day = None
+    best_hour = None
+    for day_key, series in days_map.items():
+        if not isinstance(series, list):
+            continue
+        for hour, value in enumerate(series):
+            if not isinstance(value, (int, float)):
+                continue
+            if best_value is None or value < best_value:
+                best_value = float(value)
+                best_day = day_key
+                best_hour = hour
+    return best_day, best_hour, best_value
+
+
 def compute_hourly_avg(days_map):
     if not days_map:
         return []
@@ -2028,6 +2097,61 @@ def build_kw_annual_payload(entries, year, peak_type="highest"):
     }
 
 
+def build_kw_month_series_payload(entries, year, month, peak_type="highest"):
+    if not year or not month:
+        return None
+    month = int(month)
+    if month < 1 or month > 12:
+        return None
+    selected = None
+    for entry in entries:
+        if not is_hourly_kw_entry(entry):
+            continue
+        entry_year = entry.get("year")
+        entry_month = entry.get("month")
+        if not entry_year or not entry_month:
+            parsed_year, parsed_month = parse_year_month(entry.get("original_name", ""))
+            entry_year = entry_year or parsed_year
+            entry_month = entry_month or parsed_month
+        if entry_year != year or entry_month != month:
+            continue
+        if not selected or entry.get("uploaded_at", "") > selected.get("uploaded_at", ""):
+            selected = entry
+
+    if not selected:
+        return None
+
+    hourly = normalize_hourly_payload(selected)
+    kw_payload = hourly.get("kw") or {}
+    days_map = kw_payload.get("days") or {}
+    if not isinstance(days_map, dict) or not days_map:
+        return None
+
+    normalized_peak = (peak_type or "highest").strip().lower()
+    if normalized_peak not in ("lowest", "highest"):
+        normalized_peak = "highest"
+
+    peak_day, peak_hour, peak_value = find_peak_day_hour(days_map, normalized_peak)
+    if not peak_day or peak_hour is None:
+        return None
+    series = days_map.get(peak_day)
+    if not isinstance(series, list) or len(series) != 24:
+        return None
+
+    return {
+        "labels": build_hour_labels(),
+        "values": series,
+        "metric": "Load (kW)",
+        "year": year,
+        "month": month,
+        "peak": normalized_peak,
+        "label": MONTH_NAMES[month - 1],
+        "day": peak_day,
+        "peak_hour_index": peak_hour,
+        "peak_value": peak_value
+    }
+
+
 def build_year_options(entries, category=None):
     years = set()
     for entry in entries:
@@ -2419,6 +2543,20 @@ def edd_hourly_kw_annual(year):
     payload = build_kw_annual_payload(entries, year, peak_type)
     if not payload:
         return jsonify({"error": "No hourly kW data found for that year."}), 400
+
+    return jsonify(payload)
+
+
+@app.route("/api/edd-hourly-kw-month-series/<int:year>/<int:month>")
+def edd_hourly_kw_month_series(year, month):
+    if not get_current_user():
+        return jsonify({"error": "Unauthorized"}), 401
+
+    entries = load_manifest(include_data=True)
+    peak_type = request.args.get("peak", "highest")
+    payload = build_kw_month_series_payload(entries, year, month, peak_type)
+    if not payload:
+        return jsonify({"error": "No hourly kW data found for that month."}), 400
 
     return jsonify(payload)
 

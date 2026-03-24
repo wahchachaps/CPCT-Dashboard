@@ -3604,6 +3604,23 @@
         if (!select || !peakSelect || !canvas || !window.Chart) return;
 
         let chart = null;
+        const monthlyCanvas = document.getElementById("monthlyKwChart");
+        const monthlyStatus = document.getElementById("monthlyKwStatus");
+        const monthlyTableBody = document.getElementById("monthlyKwTableBody");
+        const monthlyTitle = document.getElementById("monthlyKwTitle");
+        let monthlyCard = document.getElementById("monthlyKwCard");
+        if (monthlyCanvas) {
+            const canvasCard = monthlyCanvas.closest(".graph-card");
+            if (canvasCard) {
+                monthlyCard = canvasCard;
+            }
+        }
+        let monthlyChart = null;
+        let selectedMonth = null;
+        const monthNames = [
+            "January", "February", "March", "April", "May", "June",
+            "July", "August", "September", "October", "November", "December"
+        ];
 
         function setStatus(message) {
             if (!status) return;
@@ -3662,6 +3679,156 @@
             return peak === "lowest" ? "#2563eb" : "#f97316";
         }
 
+        function setMonthlyStatus(message) {
+            if (!monthlyStatus) return;
+            monthlyStatus.textContent = message || "";
+            monthlyStatus.classList.toggle("is-visible", !!message);
+        }
+
+        function renderMonthlyTable(labels, values, highlightIndex) {
+            if (!monthlyTableBody) return;
+            monthlyTableBody.innerHTML = "";
+            if (!labels || labels.length === 0) {
+                const row = document.createElement("tr");
+                const cell = document.createElement("td");
+                cell.colSpan = 2;
+                cell.textContent = "No data available.";
+                row.appendChild(cell);
+                monthlyTableBody.appendChild(row);
+                return;
+            }
+            labels.forEach(function (label, idx) {
+                const row = document.createElement("tr");
+                const hourCell = document.createElement("td");
+                hourCell.textContent = label;
+                if (typeof highlightIndex === "number" && idx === highlightIndex) {
+                    hourCell.classList.add("table-highlight-text");
+                }
+                const valueCell = document.createElement("td");
+                const value = values[idx];
+                valueCell.textContent = (typeof value === "number" && Number.isFinite(value))
+                    ? numberTick(value)
+                    : "-";
+                row.appendChild(hourCell);
+                row.appendChild(valueCell);
+                monthlyTableBody.appendChild(row);
+            });
+        }
+
+        function updateMonthlyChart(payload) {
+            if (!monthlyCanvas || !window.Chart) return;
+            const labels = payload.labels || [];
+            const values = payload.values || [];
+            const metric = payload.metric || "Load (kW)";
+            const highlightIndex = typeof payload.peak_hour_index === "number" ? payload.peak_hour_index : null;
+            renderMonthlyTable(labels, values, highlightIndex);
+
+            const barColors = labels.map(function (_, idx) {
+                if (typeof highlightIndex === "number" && idx === highlightIndex) {
+                    return "#facc15";
+                }
+                return "#2563eb";
+            });
+
+            if (monthlyTitle && payload.label && payload.year) {
+                const peakLabelText = normalizePeak(payload.peak) === "lowest" ? "Lowest Peak" : "Highest Peak";
+                const dayText = formatDayLabel(payload.day || "");
+                const daySuffix = dayText ? ` (${dayText})` : "";
+                monthlyTitle.textContent = `Monthly Hourly Loading (kW) - ${payload.label}${daySuffix} ${payload.year} (${peakLabelText})`;
+            }
+            if (monthlyCard) {
+                monthlyCard.hidden = false;
+                monthlyCard.classList.remove("is-hidden");
+            }
+
+            if (monthlyChart) {
+                monthlyChart.data.labels = labels;
+                monthlyChart.data.datasets[0].label = metric;
+                monthlyChart.data.datasets[0].data = values;
+                monthlyChart.data.datasets[0].backgroundColor = barColors;
+                monthlyChart.update();
+                return;
+            }
+
+            monthlyChart = registerChart(new Chart(monthlyCanvas, {
+                type: "bar",
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: metric,
+                        data: values,
+                        backgroundColor: barColors,
+                        borderRadius: 2
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    layout: { padding: { top: 10, right: 12, bottom: 4, left: 6 } },
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: {
+                            ticks: {
+                                autoSkip: true,
+                                maxTicksLimit: 12,
+                                padding: 6
+                            }
+                        },
+                        y: {
+                            beginAtZero: true,
+                            title: { display: true, text: metric },
+                            ticks: { callback: numberTick }
+                        }
+                    }
+                }
+            }));
+        }
+
+        function loadMonthly(monthIndex) {
+            if (!monthlyCanvas) return;
+            const yearValue = select.value;
+            if (!yearValue) {
+                setMonthlyStatus("Select a year to view monthly data.");
+                renderMonthlyTable([], []);
+                return;
+            }
+            selectedMonth = monthIndex;
+            setMonthlyStatus("");
+            const peak = normalizePeak(peakSelect.value);
+            fetch(`/api/edd-hourly-kw-month-series/${yearValue}/${monthIndex}?peak=${encodeURIComponent(peak)}`)
+                .then(function (response) { return response.json(); })
+                .then(function (payload) {
+                    if (payload && payload.error) {
+                        setMonthlyStatus(payload.error);
+                        renderMonthlyTable([], []);
+                        return;
+                    }
+                    if (!payload || !payload.labels || payload.labels.length === 0) {
+                        setMonthlyStatus("No hourly kW data found for that month.");
+                        renderMonthlyTable([], []);
+                        return;
+                    }
+                    updateMonthlyChart(payload);
+                })
+                .catch(function () {
+                    setMonthlyStatus("Unable to load monthly data.");
+                    renderMonthlyTable([], []);
+                });
+        }
+
+        function resetMonthly() {
+            selectedMonth = null;
+            if (monthlyTitle) {
+                monthlyTitle.textContent = "Monthly Hourly Loading (kW)";
+            }
+            setMonthlyStatus("Click a month in the Annual System Demand chart to load data.");
+            renderMonthlyTable([], []);
+            if (monthlyCard) {
+                monthlyCard.hidden = true;
+                monthlyCard.classList.add("is-hidden");
+            }
+        }
+
         function toShortMonth(label) {
             const text = String(label || "").trim();
             if (!text) return text;
@@ -3685,6 +3852,15 @@
             return text.toUpperCase();
         }
 
+        function formatDayLabel(value) {
+            const text = String(value || "");
+            const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+            if (match) {
+                return `${match[2]}/${match[3]}/${match[1]}`;
+            }
+            return text;
+        }
+
         function updateChart(payload) {
             const labels = payload.labels || [];
             const displayLabels = labels.map(toShortMonth);
@@ -3700,6 +3876,7 @@
                 chart.data.datasets[0].label = datasetLabel;
                 chart.data.datasets[0].data = values;
                 chart.data.datasets[0].backgroundColor = colors;
+                chart.options.onClick = handleAnnualBarClick;
                 if (chart.options && chart.options.scales && chart.options.scales.y) {
                     chart.options.scales.y.title.text = metric;
                 }
@@ -3723,6 +3900,7 @@
                     maintainAspectRatio: false,
                     layout: { padding: { top: 10, right: 12, bottom: 4, left: 6 } },
                     plugins: { legend: { display: false } },
+                    onClick: handleAnnualBarClick,
                     scales: {
                         x: {
                             ticks: { padding: 6 }
@@ -3741,6 +3919,7 @@
             if (!year) {
                 setStatus("Upload a file to view this chart.");
                 renderTable([], []);
+                resetMonthly();
                 return;
             }
             setStatus("");
@@ -3751,19 +3930,33 @@
                     if (payload && payload.error) {
                         setStatus(payload.error);
                         renderTable([], []);
+                        resetMonthly();
                         return;
                     }
                     if (!payload || !payload.labels || payload.labels.length === 0) {
                         setStatus("No hourly kW data found for that year.");
                         renderTable([], []);
+                        resetMonthly();
                         return;
                     }
                     updateChart(payload);
+                    if (selectedMonth) {
+                        loadMonthly(selectedMonth);
+                    }
                 })
                 .catch(function () {
                     setStatus("Unable to load chart data.");
                     renderTable([], []);
+                    resetMonthly();
                 });
+        }
+
+        function handleAnnualBarClick(event) {
+            if (!chart) return;
+            const points = chart.getElementsAtEventForMode(event, "nearest", { intersect: true }, true);
+            if (!points || points.length === 0) return;
+            const index = points[0].index;
+            loadMonthly(index + 1);
         }
 
         function populateYears(years) {
@@ -3816,12 +4009,19 @@
 
         select.addEventListener("change", function () {
             loadData(select.value);
+            if (!selectedMonth) {
+                resetMonthly();
+            }
         });
 
         peakSelect.addEventListener("change", function () {
             loadData(select.value);
+            if (selectedMonth) {
+                loadMonthly(selectedMonth);
+            }
         });
 
+        resetMonthly();
         loadYears();
     }
     function initPeakLoadChart() {

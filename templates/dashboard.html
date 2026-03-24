@@ -122,7 +122,7 @@
                         <div class="uploaded-data-head">
                             <div>
                                 <h3>Hourly Loading (kWh)</h3>
-                                <p class="upload-help">Hourly energy summed from 5-minute data for the selected day. Choose All days to show the maximum hourly total (sum of 5-minute values) across the month.</p>
+                                <p class="upload-help"></p>
                             </div>
                             <div class="upload-filter">
                                 <label for="hourlyMonthSelect">Month</label>
@@ -142,7 +142,7 @@
                         <div class="uploaded-data-head">
                             <div>
                                 <h3>Hourly Loading (kW)</h3>
-                                <p class="upload-help">Hourly demand is the maximum 5-minute kW value per hour (HH:05–HH:00) for the selected day. Choose All days to show the maximum hourly demand across the month.</p>
+                                <p class="upload-help"></p>
                             </div>
                             <div class="upload-filter">
                                 <label for="hourlyKwMonthSelect">Month</label>
@@ -162,7 +162,7 @@
                         <div class="uploaded-data-head">
                             <div>
                                 <h3>ANNUAL SYSTEM DEMAND (kW)</h3>
-                                <p class="upload-help">Monthly peak demand for the selected year.</p>
+                                <p class="upload-help"></p>
                             </div>
                             <div class="upload-filter">
                                 <label for="annualKwYearSelect">Year</label>
@@ -198,11 +198,38 @@
                             </div>
                         </div>
                     </div>
+                    <div class="graph-card peak-load-card" id="monthlyKwCard" hidden>
+                        <div class="uploaded-data-head">
+                            <div>
+                                <h3 id="monthlyKwTitle">Monthly Hourly Loading (kW)</h3>
+                                <p class="upload-help"></p>
+                            </div>
+                        </div>
+                        <div class="upload-chart-status" id="monthlyKwStatus"></div>
+                        <div class="graph-row">
+                            <div class="graph-canvas">
+                                <canvas id="monthlyKwChart"></canvas>
+                            </div>
+                            <div class="uploaded-table-card chart-table">
+                                <div class="upload-table-wrap no-scroll">
+                                    <table class="upload-table" id="monthlyKwTable">
+                                        <thead>
+                                            <tr>
+                                                <th>Hour</th>
+                                                <th>Load (kW)</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="monthlyKwTableBody"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                     <div class="graph-card peak-load-card">
                         <div class="uploaded-data-head">
                             <div>
                                 <h3>Peak Load</h3>
-                                <p class="upload-help">Peak Load, kW pulled from the EDD sheet (row 58) for each uploaded month.</p>
+                                <p class="upload-help"></p>
                             </div>
                             <div class="upload-filter">
                                 <label for="peakYearSelect">Year</label>
