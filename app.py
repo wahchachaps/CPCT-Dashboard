@@ -1878,10 +1878,10 @@ def extract_peak_load(file_path):
 
 
 def build_peak_load_year_payload(entries, year):
-    month_entries = {}
+    edd_entries = {}
+    kw_entries = {}
+
     for entry in entries:
-        if get_entry_category(entry) != "edd":
-            continue
         entry_year = entry.get("year")
         entry_month = entry.get("month")
         if not entry_year or not entry_month:
@@ -1890,20 +1890,42 @@ def build_peak_load_year_payload(entries, year):
             entry_month = entry_month or parsed_month
         if entry_year != year or not entry_month:
             continue
-        existing = month_entries.get(entry_month)
-        if not existing or entry.get("uploaded_at", "") > existing.get("uploaded_at", ""):
-            month_entries[entry_month] = entry
+
+        category = get_entry_category(entry)
+        if category == "edd":
+            existing = edd_entries.get(entry_month)
+            if not existing or entry.get("uploaded_at", "") > existing.get("uploaded_at", ""):
+                edd_entries[entry_month] = entry
+        if is_hourly_kw_entry(entry):
+            existing = kw_entries.get(entry_month)
+            if not existing or entry.get("uploaded_at", "") > existing.get("uploaded_at", ""):
+                kw_entries[entry_month] = entry
 
     labels = MONTH_NAMES[:]
     values = [None] * 12
-    for month in sorted(month_entries.keys()):
-        entry = month_entries[month]
-        data = get_entry_data(entry)
-        peak_value = data.get("peak_load")
-        if peak_value is None:
-            continue
-        if 1 <= month <= 12:
-            values[month - 1] = peak_value
+
+    kw_month_peaks = {}
+    for month, entry in kw_entries.items():
+        hourly = normalize_hourly_payload(entry)
+        kw_payload = hourly.get("kw") or {}
+        month_max = kw_payload.get("month_max") or []
+        numeric = [val for val in month_max if isinstance(val, (int, float))]
+        if numeric:
+            kw_month_peaks[month] = max(numeric)
+
+    for month in range(1, 13):
+        combined = None
+        edd_entry = edd_entries.get(month)
+        if edd_entry:
+            data = get_entry_data(edd_entry)
+            peak_value = data.get("peak_load")
+            if isinstance(peak_value, (int, float)):
+                combined = peak_value if combined is None else max(combined, peak_value)
+        kw_peak = kw_month_peaks.get(month)
+        if isinstance(kw_peak, (int, float)):
+            combined = kw_peak if combined is None else max(combined, kw_peak)
+        if combined is not None:
+            values[month - 1] = combined
 
     if all(value is None for value in values):
         return None
