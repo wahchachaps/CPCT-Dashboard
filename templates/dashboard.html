@@ -129,8 +129,8 @@
         <section class="main-content">
             <div class="cards-grid">
                 <article class="panel-card section-card" id="section-fact-sheet">
-                    <h2>Fact Sheet</h2>
-                    <p class="section-note">Use the left menu to jump between sections. The active section is highlighted automatically.</p>
+                    <h2></h2>
+                    <p class="section-note"></p>
                     <div class="overview-stack">
                         <section class="network-image-card">
                             <img class="network-image" src="/static/imgs/ALECO_System Map_v1.jpg" alt="ALECO Distribution Network Map">
@@ -440,16 +440,27 @@
 
                 <article class="panel-card section-card wide-card" id="section-system-loss">
                     <h2>System Loss</h2>
+                    <div class="uploaded-data-head">
+                        <div>
+                            <h3>System Loss (Monthly)</h3>
+                            <p class="upload-help">Based on EDD uploads.</p>
+                        </div>
+                        <div class="upload-filter">
+                            <label for="systemLossYearSelect">Year</label>
+                            <select id="systemLossYearSelect">
+                                <option value="">Loading years...</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="upload-chart-status" id="systemLossStatus"></div>
                     <div class="graph-layout two-col">
                         <div class="graph-card">
-                            <span class="chart-tag">EX</span>
-                            <h3>Systems Loss</h3>
-                            <canvas id="systemsLossChart"></canvas>
+                            <h3>System Loss</h3>
+                            <canvas id="systemLossBarChart"></canvas>
                         </div>
                         <div class="graph-card">
-                            <span class="chart-tag">EX</span>
-                            <h3>Forecasted Supply vs Demand</h3>
-                            <canvas id="forecastSupplyDemandChart"></canvas>
+                            <h3>System Loss (%)</h3>
+                            <canvas id="systemLossLineChart"></canvas>
                         </div>
                     </div>
                 </article>

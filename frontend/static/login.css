@@ -221,7 +221,7 @@
 }
 
 .login-btn:hover {
-    background-color: var(--brand-dark);
+    background-color: #facc15;
 }
 
 .error-text {

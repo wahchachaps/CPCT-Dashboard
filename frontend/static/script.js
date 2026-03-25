@@ -555,118 +555,7 @@
             }));
         }
 
-        const lossCanvas = document.getElementById("systemsLossChart");
-        if (lossCanvas) {
-            const yearsLoss = Array.from({ length: 19 }, function (_, i) { return String(2007 + i); });
-            const lossPct = [31, 20, 18, 19, 18, 22, 29, 27, 26.5, 26, 24, 23, 23, 24, 25, 26, 26, 23, 22];
-            const lossScale = getScaleBounds(lossPct, {
-                beginAtZero: true,
-                minPadding: 0.5,
-                paddingRatio: 0.08
-            });
-            registerChart(new Chart(lossCanvas, {
-                type: "bar",
-                data: {
-                    labels: yearsLoss,
-                    datasets: [{ label: "SL", data: lossPct, backgroundColor: "#1f77b4", borderRadius: 2 }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    layout: { padding: { top: 10, right: 12, bottom: 4, left: 6 } },
-                    scales: {
-                        x: {
-                            ticks: {
-                                autoSkip: true,
-                                maxTicksLimit: 12,
-                                padding: 6
-                            }
-                        },
-                        y: Object.assign({}, lossScale, {
-                            ticks: {
-                                callback: function (value) { return `${value}%`; }
-                            }
-                        })
-                    }
-                }
-            }));
-        }
-
-        const forecastCanvas = document.getElementById("forecastSupplyDemandChart");
-        if (forecastCanvas) {
-            const labels = [];
-            const baseRps = [];
-            const baseload = [];
-            const rec = [];
-            const erc = [];
-            const demand = [];
-            for (let y = 2026; y <= 2035; y++) {
-                for (let m = 1; m <= 12; m++) {
-                    labels.push(`${y}-${String(m).padStart(2, "0")}`);
-                    const progress = (y - 2026) * 12 + (m - 1);
-                    baseRps.push(30 + progress * 0.18);
-                    baseload.push(progress < 24 ? 0 : 14);
-                    rec.push(26 + progress * 0.13);
-                    erc.push(38 + progress * 0.08);
-                    demand.push(118 + progress * 0.7 + (Math.sin(progress / 2) * 9));
-                }
-            }
-            const supplyTotals = labels.map(function (_, index) {
-                return (erc[index] || 0) + (baseload[index] || 0) + (baseRps[index] || 0) + (rec[index] || 0);
-            });
-            const forecastScale = getScaleBounds([supplyTotals, demand], {
-                beginAtZero: true,
-                minPadding: 5,
-                paddingRatio: 0.08
-            });
-            registerChart(new Chart(forecastCanvas, {
-                data: {
-                    labels: labels,
-                    datasets: [
-                        { type: "bar", order: 3, stack: "supply", label: "ERC Case No. 2025-121 RC", data: erc, backgroundColor: "#f08c2e" },
-                        { type: "bar", order: 3, stack: "supply", label: "Baseload 2028", data: baseload, backgroundColor: "#f4b400" },
-                        { type: "bar", order: 3, stack: "supply", label: "Intermediate RE for RPS", data: baseRps, backgroundColor: "#4c77c9" },
-                        { type: "bar", order: 3, stack: "supply", label: "Retail Electricity Suppliers MW", data: rec, backgroundColor: "#8aa5d6" },
-                        {
-                            type: "line",
-                            order: 1,
-                            label: "Coincident Peak MW",
-                            data: demand,
-                            borderColor: "#111",
-                            backgroundColor: "#111",
-                            borderWidth: 2.8,
-                            tension: 0.25,
-                            yAxisID: "y",
-                            pointRadius: 0,
-                            clip: false
-                        }
-                    ]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    layout: { padding: { top: 10, right: 12, bottom: 4, left: 6 } },
-                    scales: {
-                        x: {
-                            stacked: true,
-                            ticks: {
-                                autoSkip: true,
-                                maxTicksLimit: 12,
-                                callback: function (_, index) {
-                                    const label = labels[index];
-                                    return label && label.endsWith("-01") ? label.slice(0, 4) : "";
-                                }
-                            }
-                        },
-                        y: Object.assign({}, forecastScale, {
-                            stacked: true,
-                            title: { display: true, text: "MW" },
-                            ticks: { callback: numberTick }
-                        })
-                    }
-                }
-            }));
-        }
+        // System Loss charts are rendered from EDD uploads later.
 
         const generationMixCanvas = document.getElementById("generationMixChart");
         if (generationMixCanvas) {
@@ -2416,7 +2305,7 @@
         const empty = document.getElementById("recentUploadsEmpty");
         if (!list) return;
         list.innerHTML = "";
-        const rows = Array.isArray(items) ? items.slice(0, 3) : [];
+        const rows = Array.isArray(items) ? items.slice(0, 4) : [];
         rows.forEach(function (item) {
             list.appendChild(buildUploadItem(item));
         });
@@ -2574,6 +2463,9 @@
             if (typeof window.refreshHourlyDayKwChartMonths === "function") {
                 window.refreshHourlyDayKwChartMonths();
             }
+            if (typeof window.refreshSystemLossYears === "function") {
+                window.refreshSystemLossYears();
+            }
         });
     }
 
@@ -2701,6 +2593,9 @@
                 if (typeof window.refreshHourlyDayKwChartMonths === "function") {
                     window.refreshHourlyDayKwChartMonths();
                 }
+                if (typeof window.refreshSystemLossYears === "function") {
+                    window.refreshSystemLossYears();
+                }
                 if (submitButton) {
                     submitButton.disabled = false;
                 }
@@ -2748,20 +2643,9 @@
 
             const recentList = document.getElementById("recentUploadsList");
             const recentEmpty = document.getElementById("recentUploadsEmpty");
-            if (recentList) {
-                const recentItems = Array.from(recentList.querySelectorAll(".upload-item"));
-                let visibleRecent = 0;
-                recentItems.forEach(function (item) {
-                    const itemType = normalizeUploadCategory(item.getAttribute("data-category"));
-                    const matchesType = typeValue === "all" || itemType === typeValue;
-                    item.style.display = matchesType ? "" : "none";
-                    if (matchesType) {
-                        visibleRecent += 1;
-                    }
-                });
-                if (recentEmpty) {
-                    recentEmpty.style.display = visibleRecent === 0 ? "block" : "none";
-                }
+            if (recentList && recentEmpty) {
+                const hasRecent = recentList.querySelectorAll(".upload-item").length > 0;
+                recentEmpty.style.display = hasRecent ? "none" : "block";
             }
         }
 
@@ -4117,6 +4001,253 @@
         resetMonthly();
         loadYears();
     }
+
+    function initSystemLossCharts() {
+        const yearSelect = document.getElementById("systemLossYearSelect");
+        const barCanvas = document.getElementById("systemLossBarChart");
+        const lineCanvas = document.getElementById("systemLossLineChart");
+        const status = document.getElementById("systemLossStatus");
+        if (!yearSelect || !barCanvas || !lineCanvas || !window.Chart) return;
+
+        let barChart = null;
+        let lineChart = null;
+
+        function setStatus(message) {
+            if (!status) return;
+            status.textContent = message || "";
+            status.classList.toggle("is-visible", !!message);
+        }
+
+        function isNumeric(value) {
+            return typeof value === "number" && Number.isFinite(value);
+        }
+
+        function toShortMonth(label) {
+            const text = String(label || "").trim();
+            if (!text) return text;
+            const map = {
+                january: "JAN",
+                february: "FEB",
+                march: "MAR",
+                april: "APR",
+                may: "MAY",
+                june: "JUN",
+                july: "JUL",
+                august: "AUG",
+                september: "SEP",
+                october: "OCT",
+                november: "NOV",
+                december: "DEC"
+            };
+            const lower = text.toLowerCase();
+            if (map[lower]) return map[lower];
+            if (lower.length >= 3) return lower.slice(0, 3).toUpperCase();
+            return text.toUpperCase();
+        }
+
+        function updateCharts(payload) {
+            const labels = payload.labels || [];
+            const displayLabels = labels.map(toShortMonth);
+            const values = payload.values || [];
+            const percents = payload.percents || [];
+            const valueMetric = payload.value_metric || "System Loss";
+            const percentMetric = payload.percent_metric || "System Loss (%)";
+
+            const valueNumbers = values.filter(isNumeric);
+            const percentNumbers = percents.filter(isNumeric);
+            if (valueNumbers.length === 0 && percentNumbers.length === 0) {
+                setStatus("No System Loss data found for that year.");
+                return;
+            }
+
+            const barScale = valueNumbers.length
+                ? getScaleBounds(values, { beginAtZero: true, minPadding: 1, paddingRatio: 0.12 })
+                : {};
+            const lineScale = percentNumbers.length
+                ? getScaleBounds(percents, { beginAtZero: true, minPadding: 0.5, paddingRatio: 0.12 })
+                : {};
+
+            if (barChart) {
+                barChart.data.labels = displayLabels;
+                barChart.data.datasets[0].label = valueMetric;
+                barChart.data.datasets[0].data = values;
+                barChart.options.scales.y = Object.assign({}, barChart.options.scales.y || {}, barScale, {
+                    title: { display: true, text: valueMetric },
+                    ticks: { callback: numberTick }
+                });
+                barChart.update();
+            } else {
+                barChart = registerChart(new Chart(barCanvas, {
+                    type: "bar",
+                    data: {
+                        labels: displayLabels,
+                        datasets: [{
+                            label: valueMetric,
+                            data: values,
+                            backgroundColor: "#0f172a",
+                            borderRadius: 2
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        layout: { padding: { top: 10, right: 12, bottom: 4, left: 6 } },
+                        plugins: { legend: { display: false } },
+                        scales: {
+                            x: {
+                                ticks: {
+                                    autoSkip: true,
+                                    maxTicksLimit: 12,
+                                    padding: 6
+                                }
+                            },
+                            y: Object.assign({}, barScale, {
+                                title: { display: true, text: valueMetric },
+                                ticks: { callback: numberTick }
+                            })
+                        }
+                    }
+                }));
+            }
+
+            if (lineChart) {
+                lineChart.data.labels = displayLabels;
+                lineChart.data.datasets[0].label = percentMetric;
+                lineChart.data.datasets[0].data = percents;
+                lineChart.options.scales.y = Object.assign({}, lineChart.options.scales.y || {}, lineScale, {
+                    title: { display: true, text: percentMetric },
+                    ticks: { callback: function (value) { return `${value}%`; } }
+                });
+                lineChart.update();
+            } else {
+                lineChart = registerChart(new Chart(lineCanvas, {
+                    type: "bar",
+                    data: {
+                        labels: displayLabels,
+                        datasets: [{
+                            label: percentMetric,
+                            data: percents,
+                            backgroundColor: "#2563eb",
+                            borderRadius: 2
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        layout: { padding: { top: 10, right: 12, bottom: 4, left: 6 } },
+                        plugins: { legend: { display: false } },
+                        scales: {
+                            x: {
+                                ticks: {
+                                    autoSkip: true,
+                                    maxTicksLimit: 12,
+                                    padding: 6
+                                }
+                            },
+                            y: Object.assign({}, lineScale, {
+                                title: { display: true, text: percentMetric },
+                                ticks: { callback: function (value) { return `${value}%`; } }
+                            })
+                        }
+                    }
+                }));
+            }
+        }
+
+        function loadData(year) {
+            if (!year) {
+                setStatus("Upload a file to view this chart.");
+                return;
+            }
+            setStatus("");
+            fetchJson(`/api/edd-system-loss-year/${year}`)
+                .then(function (result) {
+                    const payload = result.payload || {};
+                    if (!result.ok) {
+                        setStatus(payload.error || "Unable to load chart data.");
+                        return;
+                    }
+                    if (!payload || !payload.labels || payload.labels.length === 0) {
+                        setStatus("No System Loss data found for that year.");
+                        return;
+                    }
+                    updateCharts(payload);
+                })
+                .catch(function () {
+                    setStatus("Unable to load chart data.");
+                });
+        }
+
+        function populateYears(years) {
+            const previous = yearSelect.value || "";
+            yearSelect.innerHTML = "";
+            if (!years || years.length === 0) {
+                const option = document.createElement("option");
+                option.value = "";
+                option.textContent = "No uploads yet";
+                yearSelect.appendChild(option);
+                yearSelect.disabled = true;
+                setStatus("Upload a file to view this chart.");
+                return;
+            }
+
+            yearSelect.disabled = false;
+            years.forEach(function (year) {
+                const option = document.createElement("option");
+                option.value = String(year);
+                option.textContent = String(year);
+                yearSelect.appendChild(option);
+            });
+            const available = Array.from(yearSelect.options).map(function (opt) { return opt.value; });
+            if (available.indexOf(previous) !== -1) {
+                yearSelect.value = previous;
+            } else {
+                yearSelect.value = String(years[0]);
+            }
+            loadData(yearSelect.value);
+        }
+
+        function loadYears() {
+            yearSelect.innerHTML = "";
+            const loading = document.createElement("option");
+            loading.value = "";
+            loading.textContent = "Loading years...";
+            yearSelect.appendChild(loading);
+            yearSelect.disabled = true;
+
+            fetchJson("/api/edd-system-loss-years")
+                .then(function (result) {
+                    const payload = result.payload || {};
+                    if (!result.ok) {
+                        yearSelect.innerHTML = "";
+                        const option = document.createElement("option");
+                        option.value = "";
+                        option.textContent = "Unable to load years";
+                        yearSelect.appendChild(option);
+                        yearSelect.disabled = true;
+                        setStatus(payload.error || "Unable to load years.");
+                        return;
+                    }
+                    populateYears(payload.years || []);
+                })
+                .catch(function () {
+                    yearSelect.innerHTML = "";
+                    const option = document.createElement("option");
+                    option.value = "";
+                    option.textContent = "Unable to load years";
+                    yearSelect.appendChild(option);
+                    yearSelect.disabled = true;
+                    setStatus("Unable to load years.");
+                });
+        }
+
+        yearSelect.addEventListener("change", function () {
+            loadData(yearSelect.value);
+        });
+
+        window.refreshSystemLossYears = loadYears;
+        loadYears();
+    }
     function initPeakLoadChart() {
         const select = document.getElementById("peakYearSelect");
         const canvas = document.getElementById("peakLoadChart");
@@ -4220,6 +4351,7 @@
         initUploadFilter();
         initEddPurchasesChart();
         initHourlyUploadChart();
+        initSystemLossCharts();
         initPeakLoadChart();
         initHourlyDayChart();
         initHourlyDayKwChart();

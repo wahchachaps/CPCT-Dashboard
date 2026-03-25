@@ -149,10 +149,9 @@ input {
     overflow: hidden;
     border-radius: 8px;
 }
-
 .network-image {
     width: 100%;
-    max-width:1200px;
+    max-width: none;
     height: auto;
     display: block;
     margin: 0;

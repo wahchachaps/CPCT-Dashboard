@@ -17,6 +17,8 @@ from werkzeug.utils import secure_filename
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ENV_PATH = os.path.join(BASE_DIR, ".env")
+UPLOADS_DIR = os.path.join(BASE_DIR, "uploads")
+UPLOADS_JSON_DIR = os.path.join(UPLOADS_DIR, "json")
 
 if os.path.isfile(ENV_PATH):
     try:
@@ -44,7 +46,7 @@ def _read_env(*names):
     return ""
 
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder=os.path.join(BASE_DIR, "frontend", "static"))
 app.secret_key = os.environ.get("SECRET_KEY", "supersecretkey")
 if os.environ.get("SESSION_COOKIE_SECURE", "") == "1":
     app.config["SESSION_COOKIE_SECURE"] = True
@@ -64,6 +66,8 @@ KW_DEL_REUPLOAD_MESSAGE = (
     "No kW data found for this file. Switch the Pivot Field List values to KW_DEL "
     "(not KWH_DEL) and re-upload the file."
 )
+SYSTEM_LOSS_VALUE_ROW = 44
+SYSTEM_LOSS_PERCENT_ROW = 54
 ALLOWED_EXTENSIONS = {".xlsx", ".xls", ".csv"}
 MONTH_ALIASES = [
     ("january", 1), ("jan", 1),
@@ -265,6 +269,36 @@ def get_file_mtime(path):
         return 0
 
 
+def get_upload_json_path(stored_name):
+    if not stored_name:
+        return ""
+    return os.path.join(UPLOADS_JSON_DIR, f"{stored_name}.json")
+
+
+def write_upload_json(stored_name, data_json):
+    if not stored_name:
+        return None, "Missing stored filename for JSON export."
+    os.makedirs(UPLOADS_JSON_DIR, exist_ok=True)
+    path = get_upload_json_path(stored_name)
+    try:
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(data_json or {}, handle, ensure_ascii=True, separators=(",", ":"))
+    except OSError:
+        return None, "Unable to save the JSON file."
+    return path, None
+
+
+def load_upload_json(stored_name):
+    path = get_upload_json_path(stored_name)
+    if not path or not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
 def parse_year_month(filename):
     base = os.path.splitext(filename)[0].lower()
     year_match = re.search(r"(19|20)\d{2}", base)
@@ -356,7 +390,7 @@ def build_upload_groups(entries):
     return [{"year": key, "items": groups[key]} for key in year_keys]
 
 
-def build_recent_uploads(entries, limit=3):
+def build_recent_uploads(entries, limit=4):
     enriched = []
     for entry in entries:
         item = dict(entry)
@@ -432,7 +466,11 @@ def entry_matches_category(entry, category):
 
 
 def get_entry_data(entry):
-    raw = entry.get("data_json")
+    stored_name = entry.get("stored_name") if isinstance(entry, dict) else None
+    file_data = load_upload_json(stored_name)
+    if isinstance(file_data, dict):
+        return file_data
+    raw = entry.get("data_json") if isinstance(entry, dict) else None
     if not raw:
         return {}
     if isinstance(raw, str):
@@ -973,19 +1011,7 @@ def extract_peak_load_from_xl(xl):
 
     df = xl.parse(sheet, header=None)
 
-    header_idx = None
-    for i in range(len(df)):
-        row = df.iloc[i]
-        if any(isinstance(x, str) and "for the month" in x.lower() for x in row.tolist() if pd.notna(x)):
-            header_idx = i
-            break
-
-    month_col = None
-    if header_idx is not None:
-        for idx, val in enumerate(df.iloc[header_idx].tolist()):
-            if isinstance(val, str) and "for the month" in val.lower():
-                month_col = idx
-                break
+    month_col = find_for_month_column(df)
 
     peak_row = None
     for i in range(len(df)):
@@ -1002,19 +1028,60 @@ def extract_peak_load_from_xl(xl):
 
     row = df.iloc[peak_row].tolist()
     if month_col is not None and month_col < len(row):
-        value = row[month_col]
+        value = parse_numeric_cell(row[month_col])
     else:
         value = None
         for val in row:
-            num = pd.to_numeric(val, errors="coerce")
-            if pd.notna(num):
+            num = parse_numeric_cell(val)
+            if num is not None:
                 value = num
                 break
 
-    if value is None or pd.isna(value):
+    if value is None:
         return None, "Peak Load value not found."
 
     return float(value), None
+
+
+def extract_system_loss_from_xl(
+    xl,
+    value_row=SYSTEM_LOSS_VALUE_ROW,
+    percent_row=SYSTEM_LOSS_PERCENT_ROW
+):
+    sheet = find_edd_sheet(xl.sheet_names)
+    if not sheet:
+        return None, "EDD sheet not found."
+
+    df = xl.parse(sheet, header=None)
+    month_col = find_for_month_column(df)
+
+    def read_row(row_number):
+        if not row_number or row_number < 1 or row_number > len(df):
+            return None
+        row = df.iloc[row_number - 1].tolist()
+        if month_col is not None and month_col < len(row):
+            num = parse_numeric_cell(row[month_col])
+            if num is not None:
+                return num
+        for cell in row:
+            num = parse_numeric_cell(cell)
+            if num is not None:
+                return num
+        return None
+
+    value = read_row(value_row)
+    percent = read_row(percent_row)
+    percent = normalize_percent_value(percent)
+
+    if value is None:
+        return None, f"System Loss value not found in row {value_row}."
+    if percent is None:
+        return None, f"System Loss percent not found in row {percent_row}."
+
+    return {
+        "value": float(value),
+        "percent": float(percent)
+    }, None
 
 
 def precompute_upload_data(file_bytes, filename, category):
@@ -1073,9 +1140,14 @@ def precompute_upload_data(file_bytes, filename, category):
         peak_value, peak_error = extract_peak_load_from_xl(xl)
         if peak_error:
             return None, peak_error
+        system_loss, system_loss_error = extract_system_loss_from_xl(xl)
+        if system_loss_error:
+            return None, system_loss_error
         return {
             "edd_purchase": kwhr_payload,
-            "peak_load": peak_value
+            "peak_load": peak_value,
+            "system_loss_value": system_loss.get("value"),
+            "system_loss_percent": system_loss.get("percent")
         }, None
 
     return {}, None
@@ -1167,6 +1239,54 @@ def find_edd_sheet(sheet_names):
         if "edd" in lower:
             return name
     return None
+
+
+def find_for_month_column(df):
+    header_idx = None
+    for i in range(len(df)):
+        row = df.iloc[i]
+        values = [str(val).lower() for val in row.tolist() if pd.notna(val)]
+        if any("for the month" in val for val in values):
+            header_idx = i
+            break
+    if header_idx is None:
+        return None
+    for idx, val in enumerate(df.iloc[header_idx].tolist()):
+        if isinstance(val, str) and "for the month" in val.lower():
+            return idx
+    return None
+
+
+def parse_numeric_cell(value):
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return None
+    if isinstance(value, str):
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        cleaned = cleaned.replace(",", "")
+        if cleaned.endswith("%"):
+            cleaned = cleaned[:-1].strip()
+        if cleaned.startswith("(") and cleaned.endswith(")"):
+            cleaned = f"-{cleaned[1:-1]}"
+        num = pd.to_numeric(cleaned, errors="coerce")
+    else:
+        num = pd.to_numeric(value, errors="coerce")
+    if pd.isna(num):
+        return None
+    return float(num)
+
+
+def normalize_percent_value(value):
+    num = parse_numeric_cell(value)
+    if num is None:
+        return None
+    abs_num = abs(num)
+    if 0 < abs_num <= 1:
+        return num * 100
+    if abs_num > 100 and abs_num <= 10000:
+        return num / 100
+    return num
 
 
 def match_month_in_name(name, target_year=None, target_month=None):
@@ -1902,19 +2022,7 @@ def extract_peak_load(file_path):
 
     df = xl.parse(sheet, header=None)
 
-    header_idx = None
-    for i in range(len(df)):
-        row = df.iloc[i]
-        if any(isinstance(x, str) and "for the month" in x.lower() for x in row.tolist() if pd.notna(x)):
-            header_idx = i
-            break
-
-    month_col = None
-    if header_idx is not None:
-        for idx, val in enumerate(df.iloc[header_idx].tolist()):
-            if isinstance(val, str) and "for the month" in val.lower():
-                month_col = idx
-                break
+    month_col = find_for_month_column(df)
 
     peak_row = None
     for i in range(len(df)):
@@ -1931,16 +2039,16 @@ def extract_peak_load(file_path):
 
     row = df.iloc[peak_row].tolist()
     if month_col is not None and month_col < len(row):
-        value = row[month_col]
+        value = parse_numeric_cell(row[month_col])
     else:
         value = None
         for val in row:
-            num = pd.to_numeric(val, errors="coerce")
-            if pd.notna(num):
+            num = parse_numeric_cell(val)
+            if num is not None:
                 value = num
                 break
 
-    if value is None or pd.isna(value):
+    if value is None:
         return None, "Peak Load value not found."
 
     return float(value), None
@@ -2003,6 +2111,79 @@ def build_peak_load_year_payload(entries, year):
         "labels": labels,
         "values": values,
         "metric": "Peak Load (kW)",
+        "year": year
+    }
+
+
+def build_system_loss_year_payload(entries, year):
+    edd_entries = {}
+    for entry in entries:
+        if get_entry_category(entry) != "edd":
+            continue
+        entry_year = entry.get("year")
+        entry_month = entry.get("month")
+        if not entry_year or not entry_month:
+            parsed_year, parsed_month = parse_year_month(entry.get("original_name", ""))
+            entry_year = entry_year or parsed_year
+            entry_month = entry_month or parsed_month
+        if entry_year != year or not entry_month:
+            continue
+        existing = edd_entries.get(entry_month)
+        if not existing or entry.get("uploaded_at", "") > existing.get("uploaded_at", ""):
+            edd_entries[entry_month] = entry
+
+    labels = MONTH_NAMES[:]
+    values = [None] * 12
+    percents = [None] * 12
+
+    def derive_system_loss_from_purchase(data):
+        purchase = data.get("edd_purchase") or {}
+        labels_list = purchase.get("labels") or []
+        values_list = purchase.get("values") or []
+        value_candidate = None
+        percent_candidate = None
+        for idx, label in enumerate(labels_list):
+            text = str(label or "").strip().lower()
+            if not text:
+                continue
+            if "system loss" in text or "systemloss" in text or text == "sl":
+                raw_value = values_list[idx] if idx < len(values_list) else None
+                parsed = parse_numeric_cell(raw_value)
+                if parsed is None:
+                    continue
+                if "%" in text or "percent" in text:
+                    percent_candidate = normalize_percent_value(parsed)
+                else:
+                    value_candidate = parsed
+        return value_candidate, percent_candidate
+
+    for month in range(1, 13):
+        entry = edd_entries.get(month)
+        if not entry:
+            continue
+        data = get_entry_data(entry)
+        value = parse_numeric_cell(data.get("system_loss_value"))
+        percent = normalize_percent_value(data.get("system_loss_percent"))
+        if value is None or percent is None:
+            fallback_value, fallback_percent = derive_system_loss_from_purchase(data)
+            if value is None and fallback_value is not None:
+                value = fallback_value
+            if percent is None and fallback_percent is not None:
+                percent = fallback_percent
+        if value is not None:
+            values[month - 1] = float(value)
+        if percent is not None:
+            percents[month - 1] = float(percent)
+
+    if all(val is None for val in values) and all(val is None for val in percents):
+        return None
+
+    return {
+        "labels": labels,
+        "values": values,
+        "percents": percents,
+        "value_metric": "System Loss",
+        "percent_metric": "System Loss (%)",
         "year": year
     }
 
@@ -2265,6 +2446,11 @@ def upload_file():
             if wants_json_response():
                 return jsonify({"error": data_error}), 400
             return redirect(url_for("dashboard", upload_error="processing") + "#section-uploads")
+        _, json_error = write_upload_json(stored_name, data_json)
+        if json_error:
+            if wants_json_response():
+                return jsonify({"error": json_error}), 500
+            return redirect(url_for("dashboard", upload_error="processing") + "#section-uploads")
 
         year, month = parse_year_month(original_name)
         insert_upload({
@@ -2433,6 +2619,9 @@ def api_upload():
         data_json, data_error = precompute_upload_data(payload, original_name, selected_category)
         if data_error:
             return jsonify({"error": data_error}), 400
+        _, json_error = write_upload_json(stored_name, data_json)
+        if json_error:
+            return jsonify({"error": json_error}), 500
 
         year, month = parse_year_month(original_name)
         insert_upload({
@@ -2530,6 +2719,15 @@ def edd_hourly_kw_years():
         return jsonify({"error": "Unauthorized"}), 401
     entries = load_manifest()
     years = build_year_options(entries, category="hourly_kw")
+    return jsonify({"years": years})
+
+
+@app.route("/api/edd-system-loss-years")
+def edd_system_loss_years():
+    if not get_current_user():
+        return jsonify({"error": "Unauthorized"}), 401
+    entries = load_manifest()
+    years = build_year_options(entries, category="edd")
     return jsonify({"years": years})
 
 
@@ -2897,6 +3095,19 @@ def edd_peak_load_year(year):
     payload = build_peak_load_year_payload(entries, year)
     if not payload:
         return jsonify({"error": "No Peak Load data found for that year."}), 400
+
+    return jsonify(payload)
+
+
+@app.route("/api/edd-system-loss-year/<int:year>")
+def edd_system_loss_year(year):
+    if not get_current_user():
+        return jsonify({"error": "Unauthorized"}), 401
+
+    entries = load_manifest(include_data=True)
+    payload = build_system_loss_year_payload(entries, year)
+    if not payload:
+        return jsonify({"error": "No System Loss data found for that year."}), 400
 
     return jsonify(payload)
 
