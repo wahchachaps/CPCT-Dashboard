@@ -941,19 +941,10 @@ def compute_kw_hourly_payload(xl):
 
 
 def extract_kwhr_purchase_from_xl(xl):
-    sheet = find_kwhr_purchase_sheet(xl.sheet_names)
-    if not sheet:
-        return None, "KWhr Purchase sheet not found."
-
-    df = xl.parse(sheet, header=None)
-    header_idx = None
-    for i in range(len(df)):
-        row = df.iloc[i]
-        values = [str(val).lower() for val in row.tolist() if pd.notna(val)]
-        if any("raw mq" in val for val in values) and any("total amq" in val for val in values):
-            header_idx = i
-            break
-    if header_idx is None:
+    sheet, df, header_idx, error = locate_kwhr_purchase_table(xl)
+    if error:
+        return None, error
+    if df is None or header_idx is None:
         return None, "Unable to locate the KWhr Purchase table."
 
     header_row = df.iloc[header_idx].tolist()
@@ -980,13 +971,7 @@ def extract_kwhr_purchase_from_xl(xl):
 
     data = data[data["Substation"].apply(is_valid_row)]
 
-    metric_candidates = [
-        "TOTAL AMQ",
-        "NGCP  - Billing Determinant Energy (BDE)",
-        "Adjusted MQ",
-        "Raw MQ"
-    ]
-    metric_col = next((col for col in metric_candidates if col in data.columns), None)
+    metric_col = choose_kwhr_metric_column(data.columns)
     if not metric_col:
         return None, "No usable metric column found."
 
@@ -1201,11 +1186,90 @@ def build_upload_months(entries, category=None):
     return month_items
 
 
+def normalize_kwhr_sheet_name(name):
+    lowered = str(name or "").lower()
+    lowered = re.sub(r"[_-]+", " ", lowered)
+    lowered = re.sub(r"\s+", " ", lowered).strip()
+    return lowered
+
+
 def find_kwhr_purchase_sheet(sheet_names):
     for name in sheet_names:
-        lower = name.lower()
-        if "kwhr purchase" in lower or "kwhr purchases" in lower or "kwh purchase" in lower:
+        lower = normalize_kwhr_sheet_name(name)
+        if "purchase" in lower and ("kwhr" in lower or "kwh" in lower):
             return name
+        if "energy purchase" in lower or "power purchase" in lower:
+            return name
+    return None
+
+
+def find_kwhr_purchase_header_row(df):
+    tokens = (
+        "raw mq",
+        "adjusted mq",
+        "total amq",
+        "billing determinant energy",
+        "bde"
+    )
+    for i in range(len(df)):
+        row = df.iloc[i]
+        values = [str(val).strip().lower() for val in row.tolist() if pd.notna(val)]
+        if not values:
+            continue
+        hits = 0
+        for token in tokens:
+            if any(token in val for val in values):
+                hits += 1
+        if hits >= 2:
+            return i
+    return None
+
+
+def locate_kwhr_purchase_table(xl):
+    named_sheet = find_kwhr_purchase_sheet(xl.sheet_names)
+    if named_sheet:
+        try:
+            df = xl.parse(named_sheet, header=None)
+        except Exception:
+            df = None
+        if df is not None:
+            header_idx = find_kwhr_purchase_header_row(df)
+            if header_idx is not None:
+                return named_sheet, df, header_idx, None
+
+    for sheet in xl.sheet_names:
+        if sheet == named_sheet:
+            continue
+        try:
+            df = xl.parse(sheet, header=None)
+        except Exception:
+            continue
+        header_idx = find_kwhr_purchase_header_row(df)
+        if header_idx is not None:
+            return sheet, df, header_idx, None
+
+    if named_sheet:
+        return named_sheet, None, None, "Unable to locate the KWhr Purchase table."
+    return None, None, None, "KWhr Purchase sheet not found."
+
+
+def choose_kwhr_metric_column(columns):
+    normalized = {}
+    for col in columns:
+        name = re.sub(r"\s+", " ", str(col).strip().lower())
+        normalized[col] = name
+
+    candidates = [
+        "total amq",
+        "billing determinant energy",
+        "bde",
+        "adjusted mq",
+        "raw mq"
+    ]
+    for token in candidates:
+        for col, name in normalized.items():
+            if token in name:
+                return col
     return None
 
 
@@ -1411,19 +1475,10 @@ def extract_kwhr_purchase_data(file_path):
     except Exception:
         return None, "Unable to read Excel file."
 
-    sheet = find_kwhr_purchase_sheet(xl.sheet_names)
-    if not sheet:
-        return None, "KWhr Purchase sheet not found."
-
-    df = xl.parse(sheet, header=None)
-    header_idx = None
-    for i in range(len(df)):
-        row = df.iloc[i]
-        values = [str(val).lower() for val in row.tolist() if pd.notna(val)]
-        if any("raw mq" in val for val in values) and any("total amq" in val for val in values):
-            header_idx = i
-            break
-    if header_idx is None:
+    sheet, df, header_idx, error = locate_kwhr_purchase_table(xl)
+    if error:
+        return None, error
+    if df is None or header_idx is None:
         return None, "Unable to locate the KWhr Purchase table."
 
     header_row = df.iloc[header_idx].tolist()
@@ -1450,13 +1505,7 @@ def extract_kwhr_purchase_data(file_path):
 
     data = data[data["Substation"].apply(is_valid_row)]
 
-    metric_candidates = [
-        "TOTAL AMQ",
-        "NGCP  - Billing Determinant Energy (BDE)",
-        "Adjusted MQ",
-        "Raw MQ"
-    ]
-    metric_col = next((col for col in metric_candidates if col in data.columns), None)
+    metric_col = choose_kwhr_metric_column(data.columns)
     if not metric_col:
         return None, "No usable metric column found."
 
