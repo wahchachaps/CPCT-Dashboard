@@ -49,7 +49,33 @@
 
     const dashboardShell = document.getElementById("dashboardShell");
     const sidebarToggle = document.getElementById("sidebarToggle");
-    if (dashboardShell && sidebarToggle) {
+    const mobileSidebarToggle = document.getElementById("mobileSidebarToggle");
+    const sidebarOverlay = document.getElementById("sidebarOverlay");
+    const mobileQuery = window.matchMedia("(max-width: 900px)");
+
+    const setMobileSidebarOpen = function (open) {
+        if (!dashboardShell) {
+            return;
+        }
+        dashboardShell.classList.toggle("is-mobile-open", open);
+        if (document.body && document.body.classList) {
+            document.body.classList.toggle("is-sidebar-open", open);
+        }
+        if (sidebarOverlay) {
+            sidebarOverlay.setAttribute("aria-hidden", open ? "false" : "true");
+        }
+        if (mobileSidebarToggle) {
+            mobileSidebarToggle.setAttribute("aria-expanded", open ? "true" : "false");
+        }
+        if (sidebarToggle && mobileQuery.matches) {
+            sidebarToggle.setAttribute("aria-expanded", open ? "true" : "false");
+        }
+    };
+
+    const applyDesktopSidebarState = function () {
+        if (!dashboardShell || !sidebarToggle) {
+            return;
+        }
         let collapsed = false;
         try {
             collapsed = localStorage.getItem("sidebar_collapsed") === "1";
@@ -59,8 +85,25 @@
         if (collapsed) {
             dashboardShell.classList.add("is-collapsed");
             sidebarToggle.setAttribute("aria-expanded", "false");
+        } else {
+            dashboardShell.classList.remove("is-collapsed");
+            sidebarToggle.setAttribute("aria-expanded", "true");
         }
-        sidebarToggle.addEventListener("click", function () {
+    };
+
+    if (dashboardShell && sidebarToggle) {
+        if (!mobileQuery.matches) {
+            applyDesktopSidebarState();
+        } else {
+            dashboardShell.classList.remove("is-collapsed");
+        }
+
+        const handleSidebarToggle = function () {
+            if (mobileQuery.matches) {
+                const isOpen = dashboardShell.classList.contains("is-mobile-open");
+                setMobileSidebarOpen(!isOpen);
+                return;
+            }
             const isCollapsed = dashboardShell.classList.toggle("is-collapsed");
             sidebarToggle.setAttribute("aria-expanded", isCollapsed ? "false" : "true");
             try {
@@ -69,7 +112,53 @@
                 return;
             }
             setTimeout(resizeDashboardCharts, 200);
-        });
+        };
+
+        sidebarToggle.addEventListener("click", handleSidebarToggle);
+
+        if (mobileSidebarToggle) {
+            mobileSidebarToggle.addEventListener("click", function () {
+                const isOpen = dashboardShell.classList.contains("is-mobile-open");
+                setMobileSidebarOpen(!isOpen);
+            });
+        }
+
+        if (sidebarOverlay) {
+            sidebarOverlay.addEventListener("click", function () {
+                setMobileSidebarOpen(false);
+            });
+        }
+
+        if (navLinks.length) {
+            navLinks.forEach(function (link) {
+                link.addEventListener("click", function () {
+                    if (mobileQuery.matches) {
+                        setMobileSidebarOpen(false);
+                    }
+                });
+            });
+        }
+
+        if (mobileQuery.matches) {
+            setMobileSidebarOpen(false);
+        }
+
+        const handleBreakpointChange = function (event) {
+            if (event.matches) {
+                dashboardShell.classList.remove("is-collapsed");
+                setMobileSidebarOpen(false);
+            } else {
+                setMobileSidebarOpen(false);
+                applyDesktopSidebarState();
+            }
+            setTimeout(resizeDashboardCharts, 200);
+        };
+
+        if (typeof mobileQuery.addEventListener === "function") {
+            mobileQuery.addEventListener("change", handleBreakpointChange);
+        } else if (typeof mobileQuery.addListener === "function") {
+            mobileQuery.addListener(handleBreakpointChange);
+        }
     }
 
     function collectNumericValues(value, bucket) {
