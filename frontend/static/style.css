@@ -478,14 +478,19 @@ input {
 
 .map-controls {
     display: flex;
-    align-items: center;
+    align-items: flex-end;
+    flex-wrap: wrap;
     gap: 10px;
     margin-bottom: 8px;
 }
 
 .map-controls h3 {
     margin: 0;
-    flex: 1;
+    width: 100%;
+}
+
+.map-controls label {
+    font-weight: 600;
 }
 
 .map-controls select {
@@ -495,6 +500,11 @@ input {
     font-weight: 600;
     background: #e0f2fe;
     color: #0f172a;
+}
+
+.map-controls .upload-help {
+    width: 100%;
+    margin: 2px 0 0;
 }
 
 .editor-row {

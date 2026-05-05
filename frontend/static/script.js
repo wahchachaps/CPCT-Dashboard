@@ -5,37 +5,6 @@
     let dashboardMap = null;
     let onMapPanelShown = null;
 
-    const loginSwitch = document.getElementById("loginSwitch");
-    const loginBulb = document.getElementById("loginBulb");
-    const loginBox = document.getElementById("loginBox");
-    if (loginSwitch && loginBulb && loginBox) {
-        const errorText = document.querySelector(".error-text");
-        const hasError = errorText && errorText.textContent && errorText.textContent.trim().length > 0;
-        const applyState = function (on) {
-            loginSwitch.classList.toggle("on", on);
-            loginBulb.classList.toggle("on", on);
-            loginBox.classList.toggle("is-off", !on);
-            loginBox.setAttribute("aria-hidden", on ? "false" : "true");
-            if (document.body && document.body.classList) {
-                document.body.classList.toggle("is-off", !on);
-            }
-        };
-        applyState(hasError);
-
-        const togglePower = function () {
-            const isOn = loginSwitch.classList.contains("on");
-            applyState(!isOn);
-        };
-
-        loginSwitch.addEventListener("click", togglePower);
-        loginSwitch.addEventListener("keydown", function (event) {
-            if (event.key === "Enter" || event.key === " ") {
-                event.preventDefault();
-                togglePower();
-            }
-        });
-    }
-
     function registerChart(chart) {
         dashboardCharts.push(chart);
         return chart;
@@ -712,6 +681,8 @@
 
     const mapElement = document.getElementById("map");
     const branchSelect = document.getElementById("branchSelect");
+    const energizationYearSelect = document.getElementById("energizationYearSelect");
+    const energizationMonthSelect = document.getElementById("energizationMonthSelect");
     const levelLegend = document.getElementById("levelLegend");
     const levelEditor = document.getElementById("levelEditor");
     const locationDetails = document.getElementById("locationDetails");
@@ -1640,10 +1611,32 @@
                 .replace(/[^a-z0-9]/g, "");
         }
 
+        function formatPercent(value) {
+            const numeric = Number(value);
+            if (!Number.isFinite(numeric)) return "";
+            return numeric.toFixed(2);
+        }
+
+        function formatCount(value) {
+            const numeric = Number(value);
+            if (!Number.isFinite(numeric)) return "N/A";
+            return Math.round(numeric).toLocaleString();
+        }
+
+        function levelFromPercent(value) {
+            const numeric = Number(value);
+            if (!Number.isFinite(numeric)) return "60-69";
+            if (numeric >= 90) return "90-100";
+            if (numeric >= 80) return "80-89";
+            if (numeric >= 70) return "70-79";
+            return "60-69";
+        }
+
         const locationIndex = new Map();
         Object.keys(branchData).forEach(function (branchKey) {
             branchData[branchKey].forEach(function (loc) {
                 loc.branch = branchKey;
+                loc.description = loc.description || "No uploaded Energization data yet.";
                 locationIndex.set(normalizeName(loc.name), loc);
             });
         });
@@ -1652,6 +1645,12 @@
         const mapPanels = Array.from(document.querySelectorAll(".map-panel"));
         let selectedLocationKey = null;
         let currentBranch = branchSelect ? branchSelect.value : "1";
+        let energizationMonthItems = [];
+        let selectedEnergizationUploadId = "";
+        const monthNames = [
+            "January", "February", "March", "April", "May", "June",
+            "July", "August", "September", "October", "November", "December"
+        ];
 
         function syncMapPanelVisibility(branchKey) {
             if (mapPanels.length === 0) return;
@@ -1684,11 +1683,225 @@
                     "<h3>Location Details</h3><p>Click a location on the map to see details.</p>";
                 return;
             }
+            const hhElectrificationLevel = Number.isFinite(Number(loc.hhElectrificationLevel))
+                ? `${formatPercent(loc.hhElectrificationLevel)}%`
+                : (Number.isFinite(Number(loc.electrificationPercent)) ? `${formatPercent(loc.electrificationPercent)}%` : "N/A");
             locationDetails.innerHTML =
                 `<h3>${loc.name}</h3>` +
                 `<p><strong>Type:</strong> ${loc.type}</p>` +
                 `<p><strong>Branch:</strong> Branch ${loc.branch}</p>` +
-                `<p><strong>Electrification:</strong> ${LEVELS[loc.level].label}</p>`;
+                `<p><strong>HH Electrification Level:</strong> ${hhElectrificationLevel}</p>` +
+                `<p><strong>HHS Projected Potential 2024:</strong> ${formatCount(loc.households)}</p>` +
+                `<p><strong>Energized HHS:</strong> ${formatCount(loc.energizedHouseholds)}</p>` +
+                `<p><strong>Unenergized HHS:</strong> ${formatCount(loc.unenergizedHouseholds)}</p>` +
+                `<p><strong>Electrification Band:</strong> ${LEVELS[loc.level].label}</p>`;
+        }
+
+        function applyEnergizationMapPayload(payload) {
+            if (!payload || !Array.isArray(payload.locations)) return false;
+
+            const incomingByName = new Map();
+            payload.locations.forEach(function (item) {
+                const key = normalizeName(item && item.name);
+                if (!key) return;
+                incomingByName.set(key, item || {});
+            });
+            if (incomingByName.size === 0) return false;
+
+            let changed = 0;
+            Object.keys(branchData).forEach(function (branchKey) {
+                (branchData[branchKey] || []).forEach(function (loc) {
+                    const key = normalizeName(loc.name);
+                    const incoming = incomingByName.get(key);
+                    if (!incoming) return;
+
+                    const percent = Number(incoming.electrification_percent);
+                    const hhElectrificationLevel = Number(incoming.hh_electrification_level);
+                    const households = Number(incoming.households);
+                    const energizedHouseholds = Number(incoming.energized_households);
+                    const unenergizedHouseholdsRaw = Number(incoming.unenergized_households);
+                    const levelFromPayload = LEVELS[incoming.level] ? incoming.level : null;
+
+                    if (Number.isFinite(percent)) {
+                        loc.electrificationPercent = percent;
+                        loc.level = levelFromPayload || levelFromPercent(percent);
+                    } else if (levelFromPayload) {
+                        loc.level = levelFromPayload;
+                    }
+                    if (Number.isFinite(hhElectrificationLevel)) {
+                        loc.hhElectrificationLevel = hhElectrificationLevel;
+                    } else if (Number.isFinite(percent)) {
+                        loc.hhElectrificationLevel = percent;
+                    }
+                    if (Number.isFinite(households)) {
+                        loc.households = households;
+                    }
+                    if (Number.isFinite(energizedHouseholds)) {
+                        loc.energizedHouseholds = energizedHouseholds;
+                    }
+                    if (Number.isFinite(unenergizedHouseholdsRaw)) {
+                        loc.unenergizedHouseholds = unenergizedHouseholdsRaw;
+                    } else if (Number.isFinite(households) && Number.isFinite(energizedHouseholds)) {
+                        loc.unenergizedHouseholds = Math.max(0, households - energizedHouseholds);
+                    }
+
+                    const descriptionParts = [];
+                    if (Number.isFinite(Number(loc.hhElectrificationLevel))) {
+                        descriptionParts.push(`HH Electrification Level: ${formatPercent(loc.hhElectrificationLevel)}%`);
+                    }
+                    if (
+                        Number.isFinite(Number(loc.households)) &&
+                        Number.isFinite(Number(loc.energizedHouseholds)) &&
+                        Number.isFinite(Number(loc.unenergizedHouseholds))
+                    ) {
+                        descriptionParts.push(
+                            `HHs: ${formatCount(loc.households)}, Energized: ${formatCount(loc.energizedHouseholds)}, Unenergized: ${formatCount(loc.unenergizedHouseholds)}`
+                        );
+                    }
+                    if (payload.label) {
+                        descriptionParts.push(`Source: ${payload.label}`);
+                    }
+                    loc.description = descriptionParts.join(" | ") || loc.description;
+                    changed += 1;
+                });
+            });
+
+            if (changed === 0) return false;
+
+            mapContexts.forEach(function (context) {
+                context.regions.forEach(function (region) {
+                    const key = normalizeName(region.getAttribute("data-name"));
+                    const loc = locationIndex.get(key);
+                    if (!loc) return;
+                    applyLevelStyles(region, loc.level);
+                });
+            });
+
+            renderLegend(currentBranch);
+            if (selectedLocationKey) {
+                updateLocationDetails(locationIndex.get(selectedLocationKey));
+            }
+            return true;
+        }
+
+        function getYearItems(yearValue) {
+            if (!yearValue) {
+                return energizationMonthItems.slice();
+            }
+            return energizationMonthItems.filter(function (item) {
+                return String(item.year || "") === String(yearValue);
+            });
+        }
+
+        function fillEnergizationMonthSelect(yearValue, preferredUploadId) {
+            if (!energizationMonthSelect) {
+                selectedEnergizationUploadId = preferredUploadId || "";
+                return selectedEnergizationUploadId;
+            }
+
+            const previousValue = energizationMonthSelect.value;
+            const yearItems = getYearItems(yearValue);
+            energizationMonthSelect.innerHTML = "";
+
+            if (yearItems.length === 0) {
+                const option = document.createElement("option");
+                option.value = "";
+                option.textContent = "No months found";
+                energizationMonthSelect.appendChild(option);
+                energizationMonthSelect.disabled = true;
+                selectedEnergizationUploadId = "";
+                return "";
+            }
+
+            energizationMonthSelect.disabled = false;
+            yearItems.forEach(function (item) {
+                const option = document.createElement("option");
+                option.value = item.id || "";
+                option.textContent = item.label || item.month_label || item.display_name || "Unknown";
+                energizationMonthSelect.appendChild(option);
+            });
+
+            const availableValues = Array.from(energizationMonthSelect.options).map(function (opt) { return opt.value; });
+            const candidate = preferredUploadId || previousValue || (yearItems[0] && yearItems[0].id) || "";
+            energizationMonthSelect.value = availableValues.indexOf(candidate) !== -1 ? candidate : availableValues[0];
+            selectedEnergizationUploadId = energizationMonthSelect.value || "";
+            return selectedEnergizationUploadId;
+        }
+
+        function populateEnergizationSelectors(items, preferredUploadId) {
+            energizationMonthItems = Array.isArray(items) ? items.slice() : [];
+
+            if (!energizationYearSelect) {
+                return fillEnergizationMonthSelect("", preferredUploadId);
+            }
+
+            const previousYear = energizationYearSelect.value || "";
+            const years = Array.from(new Set(
+                energizationMonthItems
+                    .map(function (item) { return item.year; })
+                    .filter(function (year) { return Number.isFinite(Number(year)); })
+                    .map(function (year) { return String(year); })
+            )).sort(function (a, b) { return Number(b) - Number(a); });
+
+            energizationYearSelect.innerHTML = "";
+            if (years.length === 0) {
+                const option = document.createElement("option");
+                option.value = "";
+                option.textContent = "No years found";
+                energizationYearSelect.appendChild(option);
+                energizationYearSelect.disabled = true;
+                return fillEnergizationMonthSelect("", preferredUploadId);
+            }
+
+            energizationYearSelect.disabled = false;
+            years.forEach(function (yearValue) {
+                const option = document.createElement("option");
+                option.value = yearValue;
+                option.textContent = yearValue;
+                energizationYearSelect.appendChild(option);
+            });
+
+            let selectedYear = years.indexOf(previousYear) !== -1 ? previousYear : years[0];
+            if (preferredUploadId) {
+                const preferred = energizationMonthItems.find(function (item) {
+                    return item.id === preferredUploadId && Number.isFinite(Number(item.year));
+                });
+                if (preferred) {
+                    selectedYear = String(preferred.year);
+                }
+            }
+            energizationYearSelect.value = selectedYear;
+            return fillEnergizationMonthSelect(selectedYear, preferredUploadId);
+        }
+
+        function loadEnergizationMapByUploadId(uploadId) {
+            const selectedId = String(uploadId || "").trim();
+            selectedEnergizationUploadId = selectedId;
+            if (!selectedId || isStaticSite()) return Promise.resolve(false);
+
+            return fetchJson(`/api/energization-map?upload_id=${encodeURIComponent(selectedId)}`)
+                .then(function (result) {
+                    if (!result.ok) return false;
+                    return applyEnergizationMapPayload(result.payload || {});
+                })
+                .catch(function () {
+                    return false;
+                });
+        }
+
+        function refreshEnergizationMapData(preferredUploadId) {
+            if (isStaticSite()) return Promise.resolve(false);
+            return fetchJson("/api/energization-map-options")
+                .then(function (result) {
+                    if (!result.ok) return false;
+                    const payload = result.payload || {};
+                    const selectedId = populateEnergizationSelectors(payload.items || [], preferredUploadId || selectedEnergizationUploadId);
+                    if (!selectedId) return false;
+                    return loadEnergizationMapByUploadId(selectedId);
+                })
+                .catch(function () {
+                    return false;
+                });
         }
 
         function renderLegend(branchKey) {
@@ -1781,7 +1994,6 @@
                 });
             });
             renderLegend(branchKey);
-            renderEditor(branchKey);
             selectedLocationKey = null;
             updateLocationDetails(null);
         }
@@ -2179,15 +2391,18 @@
                 const name = region.getAttribute("data-name") || "Unknown";
                 const key = normalizeName(region.getAttribute("data-name"));
                 const loc = locationIndex.get(key);
-                const description = region.getAttribute("data-description") || (loc && loc.description) || "No description available.";
                 title.textContent = name;
                 if (loc && LEVELS[loc.level]) {
-                    const levelLabel = LEVELS[loc.level].label;
+                    const hhElectrificationLevel = Number.isFinite(Number(loc.hhElectrificationLevel))
+                        ? `${formatPercent(loc.hhElectrificationLevel)}%`
+                        : (Number.isFinite(Number(loc.electrificationPercent)) ? `${formatPercent(loc.electrificationPercent)}%` : "N/A");
                     body.innerHTML =
-                        `<div>${description}</div>` +
-                        `<div><strong>Electrification:</strong> ${levelLabel}</div>`;
+                        `<div><strong>HH Electrification Level:</strong> ${hhElectrificationLevel}</div>` +
+                        `<div><strong>HHS Projected Potential 2024:</strong> ${formatCount(loc.households)}</div>` +
+                        `<div><strong>Energized HHS:</strong> ${formatCount(loc.energizedHouseholds)}</div>` +
+                        `<div><strong>Unenergized HHS:</strong> ${formatCount(loc.unenergizedHouseholds)}</div>`;
                 } else {
-                    body.textContent = description;
+                    body.textContent = "No description available.";
                 }
                 tooltip.classList.add("is-visible");
                 tooltip.setAttribute("aria-hidden", "false");
@@ -2248,6 +2463,7 @@
 
         initInteractiveMaps().then(function () {
             applyBranch(currentBranch);
+            return refreshEnergizationMapData();
         });
 
         if (branchSelect) {
@@ -2255,6 +2471,21 @@
                 applyBranch(branchSelect.value);
             });
         }
+        if (energizationYearSelect) {
+            energizationYearSelect.addEventListener("change", function () {
+                const selectedId = fillEnergizationMonthSelect(energizationYearSelect.value || "", "");
+                if (!selectedId) return;
+                loadEnergizationMapByUploadId(selectedId);
+            });
+        }
+        if (energizationMonthSelect) {
+            energizationMonthSelect.addEventListener("change", function () {
+                const selectedId = energizationMonthSelect.value || "";
+                if (!selectedId) return;
+                loadEnergizationMapByUploadId(selectedId);
+            });
+        }
+        window.refreshEnergizationMapData = refreshEnergizationMapData;
     }
 
     function initLoginForm() {
@@ -2313,31 +2544,59 @@
         errorBox.classList.toggle("is-visible", !!message);
     }
 
+    function normalizeUploadNameForMatch(name) {
+        return String(name || "")
+            .toLowerCase()
+            .replace(/\.[^.]+$/, "")
+            .replace(/[_\-.]+/g, " ");
+    }
+
+    function matchesEnergizationFilename(name) {
+        const base = String(name || "").trim().replace(/\.[^.]+$/, "");
+        return /^\d{2}-MSE_ALECO_(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4}$/i.test(base);
+    }
+
     function normalizeUploadCategory(value) {
         const cleaned = String(value || "").trim().toLowerCase();
         if (!cleaned) return "";
         if (cleaned === "hourly") return "hourly_kwh";
-        if (cleaned === "hourly_kwh" || cleaned === "hourly_kw" || cleaned === "edd" || cleaned === "other") {
+        if (cleaned === "hourly_kwh" || cleaned === "hourly_kw" || cleaned === "edd" || cleaned === "energization" || cleaned === "other") {
             return cleaned;
         }
         return cleaned;
     }
 
     function inferUploadCategoryFromName(name) {
-        const lowered = String(name || "").toLowerCase();
-        if (lowered.includes("edd")) {
+        const normalized = normalizeUploadNameForMatch(name);
+        if (matchesEnergizationFilename(name) || normalized.includes("energization")) {
+            return "energization";
+        }
+        if (normalized.includes("edd")) {
             return "edd";
         }
-        if (/\bkwh\b/.test(lowered)) {
+        if (/\bkwh\b/.test(normalized)) {
             return "hourly_kwh";
         }
-        if (/\bkw\b/.test(lowered)) {
+        if (/\bkw\b/.test(normalized)) {
             return "hourly_kw";
         }
-        if (lowered.includes("hourly")) {
+        if (normalized.includes("hourly")) {
             return "hourly_kwh";
         }
         return "other";
+    }
+
+    function getUploadValidationMessage(category, files) {
+        if (normalizeUploadCategory(category) !== "energization") {
+            return "";
+        }
+        const invalidFile = (files || []).find(function (file) {
+            return !matchesEnergizationFilename(file.name);
+        });
+        if (!invalidFile) {
+            return "";
+        }
+        return 'Energization files must use the format "01-MSE_ALECO_Jan 2026".';
     }
 
     function getUploadCategory(item) {
@@ -2555,6 +2814,9 @@
             if (typeof window.refreshSystemLossYears === "function") {
                 window.refreshSystemLossYears();
             }
+            if (typeof window.refreshEnergizationMapData === "function") {
+                window.refreshEnergizationMapData();
+            }
         });
     }
 
@@ -2563,6 +2825,7 @@
         if (!uploadForm) return;
 
         const fileInput = uploadForm.querySelector("#uploadFiles");
+        const categorySelect = uploadForm.querySelector("#uploadCategory");
         const selectedList = document.getElementById("uploadSelectedList");
         const selectedEmpty = document.getElementById("uploadSelectedEmpty");
         const errorBox = document.getElementById("uploadError");
@@ -2614,13 +2877,19 @@
                 selectedEmpty.style.display = selectedFiles.length === 0 ? "block" : "none";
             }
 
+            const validationMessage = getUploadValidationMessage(
+                categorySelect ? categorySelect.value : "",
+                selectedFiles
+            );
+
             if (submitButton) {
-                submitButton.disabled = selectedFiles.length === 0;
+                submitButton.disabled = selectedFiles.length === 0 || !!validationMessage;
             }
 
-            if (errorBox && selectedFiles.length > 0) {
-                errorBox.textContent = "";
-                errorBox.classList.remove("is-visible");
+            if (selectedFiles.length === 0) {
+                setUploadError("");
+            } else {
+                setUploadError(validationMessage);
             }
 
             syncInputFiles();
@@ -2643,6 +2912,9 @@
                 mergeFiles(incoming);
             });
         }
+        if (categorySelect) {
+            categorySelect.addEventListener("change", renderSelectedFiles);
+        }
 
         uploadForm.addEventListener("submit", function (event) {
             event.preventDefault();
@@ -2650,6 +2922,17 @@
                 if (errorBox) {
                     errorBox.textContent = "Please select at least one file before uploading.";
                     errorBox.classList.add("is-visible");
+                }
+                return;
+            }
+            const validationMessage = getUploadValidationMessage(
+                categorySelect ? categorySelect.value : "",
+                selectedFiles
+            );
+            if (validationMessage) {
+                setUploadError(validationMessage);
+                if (submitButton) {
+                    submitButton.disabled = true;
                 }
                 return;
             }
@@ -2684,6 +2967,9 @@
                 }
                 if (typeof window.refreshSystemLossYears === "function") {
                     window.refreshSystemLossYears();
+                }
+                if (typeof window.refreshEnergizationMapData === "function") {
+                    window.refreshEnergizationMapData();
                 }
                 if (submitButton) {
                     submitButton.disabled = false;

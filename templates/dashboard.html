@@ -52,7 +52,7 @@
                             <circle cx="12" cy="10" r="2.25" />
                         </svg>
                     </span>
-                    <span class="nav-text">System Data</span>
+                    <span class="nav-text">Energization</span>
                 </a>
                 <a href="#section-energy-demand" class="nav-link">
                     <span class="nav-icon" aria-hidden="true">
@@ -171,7 +171,7 @@
                 </article>
 
                 <article class="panel-card section-card wide-card map-card" id="section-system-data">
-                    <h2>System Data</h2>
+                    <h2>Energization</h2>
                     <p class="section-note">Click a region to view quick details.</p>
                     <div class="status-board">
                         <div class="status-body">
@@ -229,15 +229,24 @@
 
                     <div class="editor-panel">
                         <div class="map-controls">
-                            <h3>Edit Electrification Level</h3>
+                            <h3>Map Filters</h3>
                             <label for="branchSelect">Branch</label>
                             <select id="branchSelect">
-                                <option value="1" selected>Branch 1</option>
+                                <option value="all" selected>All Branches</option>
+                                <option value="1">Branch 1</option>
                                 <option value="2">Branch 2</option>
                                 <option value="3">Branch 3</option>
                             </select>
+                            <label for="energizationYearSelect">Year</label>
+                            <select id="energizationYearSelect">
+                                <option value="">Loading years...</option>
+                            </select>
+                            <label for="energizationMonthSelect">Month</label>
+                            <select id="energizationMonthSelect">
+                                <option value="">Loading months...</option>
+                            </select>
+                            <p class="upload-help">Map values are based on uploaded Energization files.</p>
                         </div>
-                        <div id="levelEditor"></div>
                     </div>
 
                     <div class="location-details" id="locationDetails">
@@ -516,12 +525,17 @@
                                     <div class="upload-error is-visible">
                                         That file is currently open or locked by another process. Close it and try again.
                                     </div>
+                                {% elif upload_error == "energization_name" %}
+                                    <div class="upload-error is-visible">
+                                        Energization filenames must use the format "01-MSE_ALECO_Jan 2026".
+                                    </div>
                                 {% endif %}
                                 <label for="uploadCategory">File Type</label>
                                 <select id="uploadCategory" name="uploadCategory">
                                     <option value="hourly_kwh">Hourly Loading (kWh)</option>
                                     <option value="hourly_kw">Hourly Loading (kW)</option>
                                     <option value="edd">EDD Report</option>
+                                    <option value="energization">Energization</option>
                                     <option value="other">Other</option>
                                 </select>
                                 <label for="uploadFiles">Select data file(s)</label>
@@ -530,7 +544,7 @@
                                     <p class="upload-selected-empty" id="uploadSelectedEmpty">No files selected.</p>
                                     <ul class="upload-selected-list" id="uploadSelectedList"></ul>
                                 </div>
-                                <p class="upload-help">Tip: Use names like "January 2026 KWH" or "January 2026 KW" so files sort into the right year and chart.</p>
+                                <p class="upload-help">Tip: Energization files must use names like "01-MSE_ALECO_Jan 2026". Hourly files can use names like "January 2026 KWH" or "January 2026 KW".</p>
                                 <div class="upload-error" id="uploadError" role="alert" aria-live="polite"></div>
                                 <div class="upload-actions">
                                     <button type="submit" class="primary-btn" id="uploadSubmit" disabled>Upload Data</button>
@@ -563,6 +577,7 @@
                                         <option value="hourly_kwh">Hourly Loading (kWh)</option>
                                         <option value="hourly_kw">Hourly Loading (kW)</option>
                                         <option value="edd">EDD Report</option>
+                                        <option value="energization">Energization</option>
                                         <option value="other">Other</option>
                                     </select>
                                 </div>

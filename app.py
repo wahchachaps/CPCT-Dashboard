@@ -66,6 +66,9 @@ KW_DEL_REUPLOAD_MESSAGE = (
     "No kW data found for this file. Switch the Pivot Field List values to KW_DEL "
     "(not KWH_DEL) and re-upload the file."
 )
+ENERGIZATION_FILENAME_MESSAGE = (
+    'Energization filenames must use the format "01-MSE_ALECO_Jan 2026".'
+)
 SYSTEM_LOSS_VALUE_ROW = 44
 SYSTEM_LOSS_PERCENT_ROW = 54
 ALLOWED_EXTENSIONS = {".xlsx", ".xls", ".csv"}
@@ -90,11 +93,36 @@ MONTH_NAMES = [
 
 CATEGORY_OPTIONS = {
     "edd": "EDD Report",
+    "energization": "Energization",
     "hourly": "Hourly Loading (Legacy)",
     "hourly_kwh": "Hourly Loading (kWh)",
     "hourly_kw": "Hourly Loading (kW)",
     "other": "Other"
 }
+ENERGIZATION_FILENAME_RE = re.compile(
+    r"^\d{2}-MSE_ALECO_(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4}$",
+    re.IGNORECASE
+)
+ENERGIZATION_MAP_LOCATIONS = [
+    {"name": "Tabaco City", "type": "City", "branch": "1"},
+    {"name": "Santo Domingo", "type": "Municipality", "branch": "1"},
+    {"name": "Tiwi", "type": "Municipality", "branch": "1"},
+    {"name": "Malinao", "type": "Municipality", "branch": "1"},
+    {"name": "Malilipot", "type": "Municipality", "branch": "1"},
+    {"name": "Bacacay", "type": "Municipality", "branch": "1"},
+    {"name": "Daraga", "type": "Municipality", "branch": "2"},
+    {"name": "Legazpi City", "type": "City", "branch": "2"},
+    {"name": "Camalig", "type": "Municipality", "branch": "2"},
+    {"name": "Manito", "type": "Municipality", "branch": "2"},
+    {"name": "Rapu-Rapu", "type": "Municipality", "branch": "2"},
+    {"name": "Polangui", "type": "Municipality", "branch": "3"},
+    {"name": "Ligao City", "type": "City", "branch": "3"},
+    {"name": "Guinobatan", "type": "Municipality", "branch": "3"},
+    {"name": "Libon", "type": "Municipality", "branch": "3"},
+    {"name": "Oas", "type": "Municipality", "branch": "3"},
+    {"name": "Pio Duran", "type": "Municipality", "branch": "3"},
+    {"name": "Jovellar", "type": "Municipality", "branch": "3"}
+]
 
 _supabase_client = None
 
@@ -246,6 +274,22 @@ def allowed_file(filename):
     return ext in ALLOWED_EXTENSIONS
 
 
+def normalize_filename_for_matching(filename):
+    base = os.path.splitext(str(filename or ""))[0].lower()
+    return re.sub(r"[_\-.]+", " ", base)
+
+
+def is_energization_filename(filename):
+    base = os.path.splitext(str(filename or "").strip())[0]
+    return bool(ENERGIZATION_FILENAME_RE.fullmatch(base))
+
+
+def validate_upload_filename(filename, category):
+    if category == "energization" and not is_energization_filename(filename):
+        return ENERGIZATION_FILENAME_MESSAGE
+    return None
+
+
 def read_upload_payload(file_storage):
     try:
         return file_storage.read()
@@ -300,7 +344,7 @@ def load_upload_json(stored_name):
 
 
 def parse_year_month(filename):
-    base = os.path.splitext(filename)[0].lower()
+    base = normalize_filename_for_matching(filename)
     year_match = re.search(r"(19|20)\d{2}", base)
     year = int(year_match.group()) if year_match else None
     month = None
@@ -413,16 +457,18 @@ def build_bootstrap_payload():
 
 
 def infer_category_from_name(name):
-    lowered = str(name or "").lower()
-    if "edd" in lowered:
+    normalized = normalize_filename_for_matching(name)
+    if is_energization_filename(name) or "energization" in normalized:
+        return "energization"
+    if "edd" in normalized:
         return "edd"
-    if re.search(r"\bkwh\b", lowered):
+    if re.search(r"\bkwh\b", normalized):
         return "hourly_kwh"
-    if re.search(r"\bkw\b", lowered):
+    if re.search(r"\bkw\b", normalized):
         return "hourly_kw"
-    if "energy" in lowered or "cp" in lowered:
+    if "energy" in normalized or re.search(r"\bcp\b", normalized):
         return "hourly_kwh"
-    if "hourly" in lowered:
+    if "hourly" in normalized:
         return "hourly_kwh"
     return "other"
 
@@ -1069,9 +1115,151 @@ def extract_system_loss_from_xl(
     }, None
 
 
+def find_energization_table_columns(df):
+    scan_limit = min(len(df), 100)
+    for row_idx in range(scan_limit):
+        row = df.iloc[row_idx].tolist()
+        municipality_col = None
+        households_col = None
+        energized_col = None
+
+        for idx, value in enumerate(row):
+            if value is None or (isinstance(value, float) and pd.isna(value)):
+                continue
+            text = str(value).strip().lower()
+            if not text:
+                continue
+            compact = re.sub(r"\s+", " ", text)
+
+            if municipality_col is None and "municipality" in compact:
+                municipality_col = idx
+            if households_col is None and "projected potential" in compact and "no. of hhs" in compact:
+                households_col = idx
+            if households_col is None and "[a]" in compact and ("potential" in compact or "no. of hhs" in compact):
+                households_col = idx
+            if energized_col is None and "energized hh" in compact:
+                energized_col = idx
+            if energized_col is None and "[b]" in compact and "energized" in compact:
+                energized_col = idx
+
+        if municipality_col is not None and households_col is not None and energized_col is not None:
+            return row_idx, municipality_col, households_col, energized_col
+    return None, None, None, None
+
+
+def find_energization_data_table(xl):
+    sheet_names = list(xl.sheet_names or [])
+    if not sheet_names:
+        return None, None, None, None, None, None
+
+    ordered_sheets = sorted(
+        sheet_names,
+        key=lambda name: (0 if "data" in str(name).lower() else 1, str(name).lower())
+    )
+
+    for sheet in ordered_sheets:
+        try:
+            df = xl.parse(sheet, header=None)
+        except Exception:
+            continue
+        row_idx, municipality_col, households_col, energized_col = find_energization_table_columns(df)
+        if row_idx is None:
+            continue
+        return sheet, df, row_idx, municipality_col, households_col, energized_col
+    return None, None, None, None, None, None
+
+
+def extract_energization_map_from_xl(xl):
+    sheet, df, header_row_idx, municipality_col, households_col, energized_col = find_energization_data_table(xl)
+    if not sheet:
+        return None, "Energization DATA table not found."
+
+    location_index = get_energization_location_index()
+    totals_by_location = {}
+
+    for row_idx in range(header_row_idx + 1, len(df)):
+        raw_name = df.iat[row_idx, municipality_col] if municipality_col < df.shape[1] else None
+        if raw_name is None or (isinstance(raw_name, float) and pd.isna(raw_name)):
+            continue
+
+        municipality = str(raw_name).strip()
+        if not municipality:
+            continue
+        if municipality.lower().startswith("grand total"):
+            break
+
+        households_raw = df.iat[row_idx, households_col] if households_col < df.shape[1] else None
+        energized_raw = df.iat[row_idx, energized_col] if energized_col < df.shape[1] else None
+        households = parse_numeric_cell(households_raw)
+        energized = parse_numeric_cell(energized_raw)
+        if households is None and energized is None:
+            continue
+
+        normalized = normalize_map_location_name(municipality)
+        info = location_index.get(normalized)
+        if not info:
+            continue
+
+        key = info["key"]
+        bucket = totals_by_location.setdefault(key, {
+            "name": info["name"],
+            "type": info["type"],
+            "branch": info["branch"],
+            "households": 0.0,
+            "energized_households": 0.0
+        })
+        if households is not None:
+            bucket["households"] += households
+        if energized is not None:
+            bucket["energized_households"] += energized
+
+    locations = []
+    total_households = 0.0
+    total_energized = 0.0
+
+    for location in ENERGIZATION_MAP_LOCATIONS:
+        key = normalize_map_location_name(location.get("name"))
+        bucket = totals_by_location.get(key)
+        if not bucket:
+            continue
+        households = bucket.get("households", 0.0)
+        energized = bucket.get("energized_households", 0.0)
+        if households <= 0:
+            continue
+
+        percent = (energized / households) * 100.0
+        unenergized = max(0.0, households - energized)
+        total_households += households
+        total_energized += energized
+        locations.append({
+            "name": bucket.get("name"),
+            "type": bucket.get("type"),
+            "branch": bucket.get("branch"),
+            "households": int(round(households)),
+            "energized_households": int(round(energized)),
+            "unenergized_households": int(round(unenergized)),
+            "electrification_percent": round(percent, 2),
+            "hh_electrification_level": round(percent, 2),
+            "level": classify_energization_level(percent)
+        })
+
+    if not locations:
+        return None, "No municipality energization data found."
+
+    overall_percent = (total_energized / total_households * 100.0) if total_households > 0 else None
+    return {
+        "sheet": sheet,
+        "locations": locations,
+        "location_count": len(locations),
+        "total_households": int(round(total_households)),
+        "total_energized_households": int(round(total_energized)),
+        "overall_percent": round(overall_percent, 2) if overall_percent is not None else None
+    }, None
+
+
 def precompute_upload_data(file_bytes, filename, category):
     ext = os.path.splitext(filename)[1].lower()
-    if ext == ".csv" and category in ("hourly", "hourly_kwh", "hourly_kw", "edd"):
+    if ext == ".csv" and category in ("hourly", "hourly_kwh", "hourly_kw", "edd", "energization"):
         return None, "This chart requires an Excel file."
     try:
         xl = pd.ExcelFile(BytesIO(file_bytes))
@@ -1135,6 +1323,14 @@ def precompute_upload_data(file_bytes, filename, category):
             "system_loss_percent": system_loss.get("percent")
         }, None
 
+    if category == "energization":
+        energization_payload, energization_error = extract_energization_map_from_xl(xl)
+        if energization_error:
+            return None, energization_error
+        return {
+            "energization_map": energization_payload
+        }, None
+
     return {}, None
 
 
@@ -1184,6 +1380,84 @@ def build_upload_months(entries, category=None):
         })
 
     return month_items
+
+
+def get_entry_year_month(entry):
+    parsed_year, parsed_month = parse_year_month(entry.get("original_name", ""))
+    year = parsed_year or entry.get("year")
+    month = parsed_month or entry.get("month")
+    return year, month
+
+
+def get_energization_map_payload(entry):
+    data = get_entry_data(entry)
+    payload = data.get("energization_map")
+    if not isinstance(payload, dict):
+        return None
+    locations = payload.get("locations")
+    if not isinstance(locations, list) or not locations:
+        return None
+    return payload
+
+
+def build_energization_map_response(entry, payload):
+    year, month = get_entry_year_month(entry)
+    response = dict(payload)
+    response["upload_id"] = entry.get("id")
+    response["label"] = entry.get("original_name", "")
+    response["uploaded_at"] = entry.get("uploaded_at", "")
+    response["year"] = year
+    response["month"] = month
+    return response
+
+
+def build_energization_map_options(entries):
+    latest_per_month = {}
+    unsorted_items = []
+
+    for entry in entries:
+        if not entry_matches_category(entry, "energization"):
+            continue
+        payload = get_energization_map_payload(entry)
+        if not payload:
+            continue
+
+        year, month = get_entry_year_month(entry)
+        uploaded_at = entry.get("uploaded_at", "")
+        display_name = os.path.splitext(entry.get("original_name", ""))[0] or entry.get("stored_name", "")
+        month_number = None
+        try:
+            month_number = int(month) if month is not None else None
+        except (TypeError, ValueError):
+            month_number = None
+
+        item = {
+            "id": entry.get("id"),
+            "display_name": display_name,
+            "uploaded_at": uploaded_at,
+            "year": year,
+            "month": month,
+            "month_label": MONTH_NAMES[month_number - 1] if month_number and 1 <= month_number <= 12 else "",
+            "label": format_month_label(year, month) if year and month else (display_name or "Unknown")
+        }
+
+        if year and month:
+            key = (int(year), int(month))
+            existing = latest_per_month.get(key)
+            if not existing or uploaded_at > existing.get("uploaded_at", ""):
+                latest_per_month[key] = item
+        else:
+            unsorted_items.append(item)
+
+    items = [latest_per_month[key] for key in sorted(latest_per_month.keys(), reverse=True)]
+    unsorted_items.sort(key=lambda value: value.get("uploaded_at", ""), reverse=True)
+    items.extend(unsorted_items)
+
+    years = sorted({int(item["year"]) for item in items if item.get("year")}, reverse=True)
+    return {
+        "items": items,
+        "years": years
+    }
 
 
 def normalize_kwhr_sheet_name(name):
@@ -1351,6 +1625,45 @@ def normalize_percent_value(value):
     if abs_num > 100 and abs_num <= 10000:
         return num / 100
     return num
+
+
+def normalize_map_location_name(value):
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    text = re.sub(r"\([^)]*\)", " ", text)
+    text = text.replace("&", " and ")
+    text = re.sub(r"\bcity of\b", " ", text)
+    text = re.sub(r"\bcity\b", " ", text)
+    text = re.sub(r"[^a-z0-9]+", "", text)
+    return text
+
+
+@lru_cache(maxsize=1)
+def get_energization_location_index():
+    index = {}
+    for item in ENERGIZATION_MAP_LOCATIONS:
+        key = normalize_map_location_name(item.get("name"))
+        if key:
+            index[key] = {
+                "key": key,
+                "name": item.get("name"),
+                "type": item.get("type"),
+                "branch": item.get("branch")
+            }
+    return index
+
+
+def classify_energization_level(percent):
+    if percent is None:
+        return "60-69"
+    if percent >= 90:
+        return "90-100"
+    if percent >= 80:
+        return "80-89"
+    if percent >= 70:
+        return "70-79"
+    return "60-69"
 
 
 def match_month_in_name(name, target_year=None, target_month=None):
@@ -2485,6 +2798,11 @@ def upload_file():
         safe_name = secure_filename(original_name)
         if not safe_name:
             continue
+        filename_error = validate_upload_filename(original_name, selected_category)
+        if filename_error:
+            if wants_json_response():
+                return jsonify({"error": filename_error}), 400
+            return redirect(url_for("dashboard", upload_error="energization_name") + "#section-uploads")
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         unique_id = uuid.uuid4().hex[:8]
@@ -2634,6 +2952,53 @@ def data_endpoint():
     return jsonify(payload)
 
 
+@app.route("/api/energization-map")
+def api_energization_map():
+    if not get_current_user():
+        return jsonify({"error": "Unauthorized"}), 401
+
+    requested_upload_id = str(request.args.get("upload_id", "")).strip()
+    if requested_upload_id:
+        entry = fetch_upload(requested_upload_id)
+        if not entry:
+            return jsonify({"error": "Selected Energization upload was not found."}), 404
+        if not entry_matches_category(entry, "energization"):
+            return jsonify({"error": "Selected file is not an Energization upload."}), 400
+        payload = get_energization_map_payload(entry)
+        if not payload:
+            return jsonify({
+                "error": "No cached Energization map data found for the selected upload. Please re-upload the file."
+            }), 400
+        return jsonify(build_energization_map_response(entry, payload))
+
+    entries = load_manifest(include_data=True)
+    options = build_energization_map_options(entries)
+    items = options.get("items") or []
+    if not items:
+        return jsonify({"error": "No Energization uploads found yet."}), 400
+
+    first = items[0]
+    entry = fetch_upload(first.get("id"))
+    if entry:
+        payload = get_energization_map_payload(entry)
+        if payload:
+            return jsonify(build_energization_map_response(entry, payload))
+
+    return jsonify({
+        "error": "No cached Energization map data found. Please re-upload the Energization file."
+    }), 400
+
+
+@app.route("/api/energization-map-options")
+def api_energization_map_options():
+    if not get_current_user():
+        return jsonify({"error": "Unauthorized"}), 401
+
+    entries = load_manifest(include_data=True)
+    payload = build_energization_map_options(entries)
+    return jsonify(payload)
+
+
 @app.route("/api/upload", methods=["POST"])
 def api_upload():
     user = get_current_user()
@@ -2660,6 +3025,9 @@ def api_upload():
         safe_name = secure_filename(original_name)
         if not safe_name:
             continue
+        filename_error = validate_upload_filename(original_name, selected_category)
+        if filename_error:
+            return jsonify({"error": filename_error}), 400
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         unique_id = uuid.uuid4().hex[:8]
