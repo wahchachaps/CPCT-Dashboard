@@ -1115,6 +1115,92 @@ def extract_system_loss_from_xl(
     }, None
 
 
+def normalize_edd_metric_text(value):
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    return re.sub(r"\s+", " ", text)
+
+
+def find_edd_metric_row(df, matcher, scan_limit=250):
+    limit = min(len(df), scan_limit)
+    for row_idx in range(limit):
+        row = df.iloc[row_idx].tolist()
+        for col_idx, cell in enumerate(row):
+            if pd.isna(cell):
+                continue
+            text = normalize_edd_metric_text(cell)
+            if not text:
+                continue
+            if matcher(text):
+                return row_idx, col_idx
+    return None, None
+
+
+def extract_edd_metric_value(row, month_col=None, label_col=None):
+    if month_col is not None and 0 <= month_col < len(row):
+        month_value = parse_numeric_cell(row[month_col])
+        if month_value is not None:
+            return month_value
+
+    if label_col is not None and label_col + 1 < len(row):
+        for idx in range(label_col + 1, len(row)):
+            value = parse_numeric_cell(row[idx])
+            if value is not None:
+                return value
+
+    for cell in row:
+        value = parse_numeric_cell(cell)
+        if value is not None:
+            return value
+
+    return None
+
+
+def extract_total_kwh_sold_from_xl(xl):
+    sheet = find_edd_sheet(xl.sheet_names)
+    if not sheet:
+        return None, "EDD sheet not found."
+
+    df = xl.parse(sheet, header=None)
+    month_col = find_for_month_column(df)
+
+    def is_total_row(text):
+        compact = re.sub(r"[^a-z0-9]+", "", text)
+        if "totalkwhsold" in compact or "totalkwhrsold" in compact:
+            return True
+        return bool(re.search(r"\b8\b", text) and "kwh" in text and "sold" in text)
+
+    total_row_idx, total_label_col = find_edd_metric_row(df, is_total_row)
+    if total_row_idx is not None:
+        row = df.iloc[total_row_idx].tolist()
+        value = extract_edd_metric_value(row, month_col=month_col, label_col=total_label_col)
+        if value is not None:
+            return float(value), None
+
+    def is_item_row(letter):
+        pattern = re.compile(rf"(?:^|[^0-9])5\s*\.?\s*{letter}(?:[^a-z0-9]|$)")
+
+        def _matcher(text):
+            return bool(pattern.search(text))
+
+        return _matcher
+
+    row_5a_idx, row_5a_label_col = find_edd_metric_row(df, is_item_row("a"))
+    row_5b_idx, row_5b_label_col = find_edd_metric_row(df, is_item_row("b"))
+
+    if row_5a_idx is None or row_5b_idx is None:
+        return None, "Total KWH Sold row not found."
+
+    value_5a = extract_edd_metric_value(df.iloc[row_5a_idx].tolist(), month_col=month_col, label_col=row_5a_label_col)
+    value_5b = extract_edd_metric_value(df.iloc[row_5b_idx].tolist(), month_col=month_col, label_col=row_5b_label_col)
+
+    if value_5a is None or value_5b is None:
+        return None, "Unable to read 5.a or 5.b values."
+
+    return float(value_5a + value_5b), None
+
+
 def find_energization_table_columns(df):
     scan_limit = min(len(df), 100)
     for row_idx in range(scan_limit):
@@ -1228,7 +1314,7 @@ def extract_energization_map_from_xl(xl):
             continue
 
         percent = (energized / households) * 100.0
-        unenergized = max(0.0, households - energized)
+        unenergized = households - energized
         total_households += households
         total_energized += energized
         locations.append({
@@ -1316,11 +1402,13 @@ def precompute_upload_data(file_bytes, filename, category):
         system_loss, system_loss_error = extract_system_loss_from_xl(xl)
         if system_loss_error:
             return None, system_loss_error
+        total_kwh_sold, _total_kwh_sold_error = extract_total_kwh_sold_from_xl(xl)
         return {
             "edd_purchase": kwhr_payload,
             "peak_load": peak_value,
             "system_loss_value": system_loss.get("value"),
-            "system_loss_percent": system_loss.get("percent")
+            "system_loss_percent": system_loss.get("percent"),
+            "edd_total_kwh_sold": total_kwh_sold
         }, None
 
     if category == "energization":
@@ -2477,6 +2565,83 @@ def build_peak_load_year_payload(entries, year):
     }
 
 
+def derive_sales_total_kwh_sold(data):
+    value = parse_numeric_cell(data.get("edd_total_kwh_sold"))
+    if value is not None:
+        return float(value)
+
+    purchase = data.get("edd_purchase") or {}
+    values = purchase.get("values") or []
+    numeric_values = []
+    for raw_value in values:
+        parsed = parse_numeric_cell(raw_value)
+        if parsed is not None:
+            numeric_values.append(parsed)
+    if numeric_values:
+        return float(sum(numeric_values))
+
+    return None
+
+
+def build_sales_year_payload(entries, year):
+    edd_entries = {}
+    for entry in entries:
+        if get_entry_category(entry) != "edd":
+            continue
+        entry_year = entry.get("year")
+        entry_month = entry.get("month")
+        if not entry_year or not entry_month:
+            parsed_year, parsed_month = parse_year_month(entry.get("original_name", ""))
+            entry_year = entry_year or parsed_year
+            entry_month = entry_month or parsed_month
+        if entry_year != year or not entry_month:
+            continue
+        existing = edd_entries.get(entry_month)
+        if not existing or entry.get("uploaded_at", "") > existing.get("uploaded_at", ""):
+            edd_entries[entry_month] = entry
+
+    labels = MONTH_NAMES[:]
+    values = [None] * 12
+
+    for month in range(1, 13):
+        entry = edd_entries.get(month)
+        if not entry:
+            continue
+        data = get_entry_data(entry)
+        total_kwh_sold = derive_sales_total_kwh_sold(data)
+        if total_kwh_sold is not None:
+            values[month - 1] = float(total_kwh_sold)
+
+    if all(value is None for value in values):
+        return None
+
+    return {
+        "labels": labels,
+        "values": values,
+        "metric": "Total KWH Sold",
+        "year": year
+    }
+
+
+def build_sales_year_options(entries):
+    years = set()
+    for entry in entries:
+        if get_entry_category(entry) != "edd":
+            continue
+        entry_year = entry.get("year")
+        if not entry_year:
+            parsed_year, _ = parse_year_month(entry.get("original_name", ""))
+            entry_year = parsed_year
+        if not entry_year:
+            continue
+        data = get_entry_data(entry)
+        if derive_sales_total_kwh_sold(data) is None:
+            continue
+        years.add(int(entry_year))
+
+    return sorted(years, reverse=True)
+
+
 def build_system_loss_year_payload(entries, year):
     edd_entries = {}
     for entry in entries:
@@ -2999,6 +3164,16 @@ def api_energization_map_options():
     return jsonify(payload)
 
 
+@app.route("/api/energization-locations")
+def api_energization_locations():
+    if not get_current_user():
+        return jsonify({"error": "Unauthorized"}), 401
+
+    return jsonify({
+        "locations": ENERGIZATION_MAP_LOCATIONS
+    })
+
+
 @app.route("/api/upload", methods=["POST"])
 def api_upload():
     user = get_current_user()
@@ -3145,6 +3320,15 @@ def edd_system_loss_years():
         return jsonify({"error": "Unauthorized"}), 401
     entries = load_manifest()
     years = build_year_options(entries, category="edd")
+    return jsonify({"years": years})
+
+
+@app.route("/api/edd-sales-years")
+def edd_sales_years():
+    if not get_current_user():
+        return jsonify({"error": "Unauthorized"}), 401
+    entries = load_manifest(include_data=True)
+    years = build_sales_year_options(entries)
     return jsonify({"years": years})
 
 
@@ -3525,6 +3709,19 @@ def edd_system_loss_year(year):
     payload = build_system_loss_year_payload(entries, year)
     if not payload:
         return jsonify({"error": "No System Loss data found for that year."}), 400
+
+    return jsonify(payload)
+
+
+@app.route("/api/edd-sales-year/<int:year>")
+def edd_sales_year(year):
+    if not get_current_user():
+        return jsonify({"error": "Unauthorized"}), 401
+
+    entries = load_manifest(include_data=True)
+    payload = build_sales_year_payload(entries, year)
+    if not payload:
+        return jsonify({"error": "No Sales data found for that year."}), 400
 
     return jsonify(payload)
 

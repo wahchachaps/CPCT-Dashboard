@@ -176,47 +176,16 @@
                     <div class="status-board">
                         <div class="status-body">
                             <div class="map-frame">
-                                <section class="interactive-map map-panel" data-interactive-map data-branch="1">
-                                    <img class="map-image" src="{{ url_for('static', filename='imgs/branch 1.png') }}" alt="Albay service map - Branch 1">
+                                <section class="interactive-map map-panel" data-interactive-map>
+                                    <img class="map-image" src="{{ url_for('static', filename='imgs/branch 11.png') }}" alt="Albay service map - All Branches">
                                     <svg class="map-overlay"
                                          viewBox="0 0 7820 5531"
                                          preserveAspectRatio="xMidYMid meet"
                                          role="img"
                                          aria-label="Clickable map regions"
                                          data-map-overlay
-                                         data-area-base="{{ url_for('static', filename='imgs/branch 1') }}"
-                                         data-area-files="Tabaco.svg, Santo Domingo.svg, Tiwi.svg, Malinao.svg, Malilipot.svg, Bacacay.svg"></svg>
-                                    <div class="map-tooltip" data-map-tooltip aria-hidden="true" role="dialog">
-                                        <div class="map-tooltip-title" data-map-tooltip-title></div>
-                                        <div class="map-tooltip-body" data-map-tooltip-body></div>
-                                    </div>
-                                </section>
-                                <section class="interactive-map map-panel is-hidden" data-interactive-map data-branch="2">
-                                    <img class="map-image" src="{{ url_for('static', filename='imgs/branch 2.png') }}" alt="Albay service map - Branch 2">
-                                    <svg class="map-overlay"
-                                         viewBox="0 0 7820 5531"
-                                         preserveAspectRatio="xMidYMid meet"
-                                         role="img"
-                                         aria-label="Clickable map regions"
-                                         data-map-overlay
-                                         data-area-base="{{ url_for('static', filename='imgs/branch 2') }}"
-                                         data-area-files="Camalig.svg, Daraga.svg, Legazpi.svg, Manito.svg, Rapu Rapu.svg"></svg>
-                                    <div class="map-tooltip" data-map-tooltip aria-hidden="true" role="dialog">
-                                        <div class="map-tooltip-title" data-map-tooltip-title></div>
-                                        <div class="map-tooltip-body" data-map-tooltip-body></div>
-                                    </div>
-                                </section>
-                                <section class="interactive-map map-panel is-hidden" data-interactive-map data-branch="3">
-                                    <img class="map-image" src="{{ url_for('static', filename='imgs/branch 3.png') }}" alt="Albay service map - Branch 3">
-                                    <svg class="map-overlay"
-                                         viewBox="0 0 7820 5531"
-                                         preserveAspectRatio="xMidYMid meet"
-                                         role="img"
-                                         aria-label="Clickable map regions"
-                                         data-map-overlay
-                                         data-area-base="{{ url_for('static', filename='imgs/branch 3') }}"
-                                         data-area-files="Polangui.svg, Ligao City.svg, Guinobatan.svg, Libon.svg, Oas.svg, Pio Duran.svg, Jovellar.svg"
-                                         data-src="{{ url_for('static', filename='imgs/branch 3.svg') }}"></svg>
+                                         data-area-base="{{ url_for('static', filename='imgs') }}"
+                                         data-area-files="branch 1/Tabaco.svg, branch 1/Santo Domingo.svg, branch 1/Tiwi.svg, branch 1/Malinao.svg, branch 1/Malilipot.svg, branch 1/Bacacay.svg, branch 2/Camalig.svg, branch 2/Daraga.svg, branch 2/Legazpi.svg, branch 2/Manito.svg, branch 2/Rapu Rapu.svg, branch 3/Polangui.svg, branch 3/Ligao City.svg, branch 3/Guinobatan.svg, branch 3/Libon.svg, branch 3/Oas.svg, branch 3/Pio Duran.svg, branch 3/Jovellar.svg"></svg>
                                     <div class="map-tooltip" data-map-tooltip aria-hidden="true" role="dialog">
                                         <div class="map-tooltip-title" data-map-tooltip-title></div>
                                         <div class="map-tooltip-body" data-map-tooltip-body></div>
@@ -232,8 +201,7 @@
                             <h3>Map Filters</h3>
                             <label for="branchSelect">Branch</label>
                             <select id="branchSelect">
-                                <option value="all" selected>All Branches</option>
-                                <option value="1">Branch 1</option>
+                                <option value="1" selected>Branch 1</option>
                                 <option value="2">Branch 2</option>
                                 <option value="3">Branch 3</option>
                             </select>
@@ -451,9 +419,30 @@
                     </div>
                 </article>
 
-                <article class="panel-card section-card" id="section-sales">
+                <article class="panel-card section-card wide-card" id="section-sales">
                     <h2>Sales</h2>
-                    <p class="section-note">Add sales dashboards here.</p>
+                    <div class="graph-card">
+                        <div class="uploaded-data-head">
+                            <div>
+                                <h3>Total KWH Sold (Line Chart)</h3>
+                                <p class="upload-help">Source: EDD 8. Total KWH Sold (5.a + 5.b)</p>
+                            </div>
+                            <div class="upload-filter">
+                                <label for="salesYearSelect">Year</label>
+                                <select id="salesYearSelect">
+                                    <option value="">Loading years...</option>
+                                </select>
+                            </div>
+                            <div class="upload-filter">
+                                <label for="salesMonthSelect">Month</label>
+                                <select id="salesMonthSelect">
+                                    <option value="all">All months</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="upload-chart-status" id="salesChartStatus"></div>
+                        <canvas id="salesLineChart"></canvas>
+                    </div>
                 </article>
 
                 <article class="panel-card section-card wide-card" id="section-system-loss">
