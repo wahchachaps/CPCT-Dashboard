@@ -185,10 +185,76 @@ input {
     background: #0f6db4;
     color: #fff;
     font-weight: 800;
-    text-align: center;
     font-size: 1.3rem;
     letter-spacing: 0.04em;
     padding: 8px 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+}
+
+.fact-sheet-title-text {
+    line-height: 1.2;
+}
+
+.fact-sheet-title-actions {
+    position: absolute;
+    right: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.fact-sheet-title-btn {
+    width: 30px;
+    height: 30px;
+    border: 1px solid rgba(255, 255, 255, 0.45);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.12);
+    color: #ffffff;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.fact-sheet-title-btn svg {
+    width: 16px;
+    height: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.fact-sheet-title-btn:hover {
+    background: rgba(255, 255, 255, 0.24);
+    border-color: rgba(255, 255, 255, 0.8);
+}
+
+.fact-sheet-title-btn:focus-visible {
+    outline: 2px solid rgba(255, 255, 255, 0.92);
+    outline-offset: 2px;
+}
+
+.fact-sheet-title-btn.is-active {
+    background: rgba(255, 255, 255, 0.28);
+    border-color: rgba(255, 255, 255, 0.9);
+}
+
+.fact-sheet-cancel-btn {
+    background: rgba(248, 113, 113, 0.2);
+    border-color: rgba(248, 113, 113, 0.65);
+}
+
+.fact-sheet-cancel-btn:hover {
+    background: rgba(248, 113, 113, 0.32);
+    border-color: rgba(248, 113, 113, 0.9);
 }
 
 .fact-table {
@@ -219,6 +285,46 @@ input {
     margin-top: 0;
     font-size: 1.7rem;
     margin-bottom: 12px;
+}
+
+.section-header-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.section-header-row h2 {
+    margin-bottom: 0;
+}
+
+.fact-sheet-last-edited {
+    margin: 4px 0 0;
+    font-size: 0.86rem;
+    color: #475569;
+}
+
+.fact-sheet-last-edited time {
+    font-weight: 600;
+    color: #1f2937;
+}
+
+.fact-table td.fact-sheet-inline-cell {
+    background: #ffffff !important;
+    outline: 1px dashed #64748b;
+    cursor: text;
+    transition: outline-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.fact-table td.fact-sheet-inline-cell:focus {
+    outline: 1px solid #0ea5e9;
+    box-shadow: 0 0 0 2px rgba(14, 165, 233, 0.25);
+}
+
+#factSheetError {
+    margin-top: 8px;
+    margin-bottom: 6px;
 }
 
 .panel-card canvas {
@@ -1122,6 +1228,10 @@ input {
 @media (max-width: 900px) {
     .graph-layout {
         grid-template-columns: 1fr;
+    }
+
+    .fact-sheet-title-actions {
+        right: 8px;
     }
 
     .graph-layout .graph-card:first-child {

@@ -19,6 +19,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ENV_PATH = os.path.join(BASE_DIR, ".env")
 UPLOADS_DIR = os.path.join(BASE_DIR, "uploads")
 UPLOADS_JSON_DIR = os.path.join(UPLOADS_DIR, "json")
+FACT_SHEET_JSON_PATH = os.path.join(UPLOADS_DIR, "fact_sheet.json")
 
 if os.path.isfile(ENV_PATH):
     try:
@@ -89,6 +90,26 @@ MONTH_ALIASES = [
 MONTH_NAMES = [
     "January", "February", "March", "April", "May", "June",
     "July", "August", "September", "October", "November", "December"
+]
+FACT_SHEET_DEFAULT_ROWS = [
+    ("Date Organized", "09 August 1972"),
+    ("Classification", "Mega Large"),
+    ("Demand", "122.55 MW"),
+    ("Substations", "6 substations; 1 substation owned by NGCP; 160MW Capacity"),
+    ("Feeders", "24 feeders (mainland); 4 feeders (islands)"),
+    ("Covered Areas", "3 Cities and 15 Municipalities"),
+    ("No. Barangays", "720"),
+    ("Energy Consumption (ave.)", "60,707,353 kWh"),
+    ("Energy Consumption (max.)", "68,947,855 kWh"),
+    ("Load Factor", "67%"),
+    ("Power Factor", "96%"),
+    ("Sub-transmission line", "2.3 km"),
+    ("13.2 kV km. of lines", "2,927 km"),
+    ("No. of Consumers", "207,582 billed consumers"),
+    ("No. of Employees", "397"),
+    ("Employee Consumer Ratio", "1 : 816"),
+    ("Status of Energization", "99.52%"),
+    ("Category Level", "C")
 ]
 
 CATEGORY_OPTIONS = {
@@ -343,6 +364,99 @@ def load_upload_json(stored_name):
         return None
 
 
+def get_default_fact_sheet_rows():
+    return [{"label": label, "value": value} for label, value in FACT_SHEET_DEFAULT_ROWS]
+
+
+def load_fact_sheet_store():
+    if not os.path.isfile(FACT_SHEET_JSON_PATH):
+        return {}
+    try:
+        with open(FACT_SHEET_JSON_PATH, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+            return payload if isinstance(payload, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_fact_sheet_store(payload):
+    os.makedirs(UPLOADS_DIR, exist_ok=True)
+    try:
+        with open(FACT_SHEET_JSON_PATH, "w", encoding="utf-8") as handle:
+            json.dump(payload or {}, handle, ensure_ascii=True, separators=(",", ":"))
+    except OSError:
+        return "Unable to save Fact Sheet."
+    return ""
+
+
+def build_fact_sheet_payload():
+    defaults = get_default_fact_sheet_rows()
+    store = load_fact_sheet_store()
+    stored_values = store.get("values") if isinstance(store.get("values"), dict) else {}
+
+    rows = []
+    for row in defaults:
+        label = row["label"]
+        value = stored_values.get(label, row["value"])
+        rows.append({
+            "label": label,
+            "value": str(value if value is not None else "")
+        })
+
+    last_edited = str(store.get("last_edited") or "")
+    edited_by = str(store.get("edited_by") or "")
+
+    return {
+        "rows": rows,
+        "last_edited": last_edited,
+        "last_edited_display": format_timestamp(last_edited),
+        "edited_by": edited_by
+    }
+
+
+def update_fact_sheet_rows(rows, edited_by=""):
+    defaults = get_default_fact_sheet_rows()
+    labels = [row["label"] for row in defaults]
+    current = build_fact_sheet_payload()
+    current_values = {
+        row["label"]: row["value"]
+        for row in current.get("rows", [])
+        if isinstance(row, dict) and row.get("label")
+    }
+
+    submitted_values = {}
+    if isinstance(rows, list):
+        for item in rows:
+            if not isinstance(item, dict):
+                continue
+            label = str(item.get("label") or "").strip()
+            if not label or label not in labels:
+                continue
+            value = str(item.get("value") if item.get("value") is not None else "").strip()
+            submitted_values[label] = value[:400]
+
+    merged_values = {}
+    for row in defaults:
+        label = row["label"]
+        if label in submitted_values:
+            merged_values[label] = submitted_values[label]
+        elif label in current_values:
+            merged_values[label] = current_values[label]
+        else:
+            merged_values[label] = row["value"]
+
+    timestamp = datetime.utcnow().isoformat(timespec="seconds")
+    payload = {
+        "values": merged_values,
+        "last_edited": timestamp,
+        "edited_by": str(edited_by or "").strip()
+    }
+    error = save_fact_sheet_store(payload)
+    if error:
+        return None, error
+    return build_fact_sheet_payload(), ""
+
+
 def parse_year_month(filename):
     base = normalize_filename_for_matching(filename)
     year_match = re.search(r"(19|20)\d{2}", base)
@@ -452,7 +566,8 @@ def build_bootstrap_payload():
         "upload_groups": build_upload_groups(uploads),
         "recent_uploads": build_recent_uploads(uploads),
         "upload_months": build_upload_months(uploads),
-        "upload_months_hourly": build_upload_months(uploads, category="hourly_kwh")
+        "upload_months_hourly": build_upload_months(uploads, category="hourly_kwh"),
+        "fact_sheet": build_fact_sheet_payload()
     }
 
 
@@ -3084,6 +3199,25 @@ def api_bootstrap():
     return jsonify(payload)
 
 
+@app.route("/api/fact-sheet", methods=["GET", "POST"])
+def api_fact_sheet():
+    if not get_current_user():
+        return jsonify({"error": "Unauthorized"}), 401
+
+    if request.method == "GET":
+        return jsonify(build_fact_sheet_payload())
+
+    data = request.get_json(silent=True) or {}
+    rows = data.get("rows")
+    if not isinstance(rows, list):
+        return jsonify({"error": "Fact Sheet rows are required."}), 400
+
+    updated, error = update_fact_sheet_rows(rows, session.get("user_email", ""))
+    if error:
+        return jsonify({"error": error}), 500
+    return jsonify({"ok": True, "fact_sheet": updated})
+
+
 @app.route("/data")
 def data_endpoint():
     if not get_current_user():
@@ -3111,7 +3245,8 @@ def data_endpoint():
         "upload_groups": build_upload_groups(entries_meta),
         "recent_uploads": build_recent_uploads(entries_meta),
         "upload_months": build_upload_months(entries_meta),
-        "upload_months_hourly": build_upload_months(entries_meta, category="hourly_kwh")
+        "upload_months_hourly": build_upload_months(entries_meta, category="hourly_kwh"),
+        "fact_sheet": build_fact_sheet_payload()
     }
     payload["username"] = session.get("user_email", "")
     return jsonify(payload)
