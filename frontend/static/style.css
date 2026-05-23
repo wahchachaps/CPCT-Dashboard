@@ -742,10 +742,15 @@ input {
     border: 1px solid #d2d8e0;
     background: transparent;
     box-shadow: 0 16px 32px rgba(15, 23, 42, 0.15);
+    opacity: 1;
+    visibility: visible;
+    transition: opacity 0.2s ease, visibility 0.2s ease;
 }
 
 .interactive-map.is-hidden {
-    display: none;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
 }
 
 .map-frame .interactive-map {
@@ -765,6 +770,15 @@ input {
     inset: 0;
     width: 100%;
     height: 100%;
+    opacity: 1;
+    visibility: visible;
+    transition: opacity 0.2s ease, visibility 0.2s ease;
+}
+
+.map-overlay.hidden {
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
 }
 
 .map-hover-layer {
