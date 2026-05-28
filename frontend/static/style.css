@@ -350,6 +350,14 @@ input {
     grid-column: auto;
 }
 
+.graph-layout.three-col {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.graph-layout.three-col .graph-card:first-child {
+    grid-column: auto;
+}
+
 .graph-card {
     border: 1px solid #dbe2ea;
     background: #f8fafc;

@@ -452,9 +452,35 @@
                     </div>
                 </article>
 
-                <article class="panel-card section-card" id="section-power-interruption">
+                <article class="panel-card section-card wide-card" id="section-power-interruption">
                     <h2>Power Interruption</h2>
-                    <p class="section-note">Add interruption metrics here.</p>
+                    <div class="uploaded-data-head">
+                        <div>
+                            <h3>Reliability Indices</h3>
+                            <p class="upload-help">Based on Dashboard Metrics uploads.</p>
+                        </div>
+                        <div class="upload-filter">
+                            <label for="interruptionYearSelect">Year</label>
+                            <select id="interruptionYearSelect">
+                                <option value="">Loading years...</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="upload-chart-status" id="interruptionStatus"></div>
+                    <div class="graph-layout three-col">
+                        <div class="graph-card">
+                            <h3>SAIDI</h3>
+                            <canvas id="saidiChart"></canvas>
+                        </div>
+                        <div class="graph-card">
+                            <h3>SAIFI</h3>
+                            <canvas id="saifiChart"></canvas>
+                        </div>
+                        <div class="graph-card">
+                            <h3>MAIFI</h3>
+                            <canvas id="maifiChart"></canvas>
+                        </div>
+                    </div>
                 </article>
 
                 <article class="panel-card section-card wide-card" id="section-power-rates">
@@ -481,6 +507,7 @@
                                 {% endif %}
                                 <label for="uploadCategory">File Type</label>
                                 <select id="uploadCategory" name="uploadCategory">
+                                    <option value="dashboard_metrics">Dashboard Metrics</option>
                                     <option value="hourly_kwh">Hourly Loading (kWh)</option>
                                     <option value="hourly_kw">Hourly Loading (kW)</option>
                                     <option value="edd">EDD Report</option>
@@ -523,6 +550,7 @@
                                     <label for="uploadTypeFilter">File Type</label>
                                     <select id="uploadTypeFilter">
                                         <option value="all" selected>All types</option>
+                                        <option value="dashboard_metrics">Dashboard Metrics</option>
                                         <option value="hourly_kwh">Hourly Loading (kWh)</option>
                                         <option value="hourly_kw">Hourly Loading (kW)</option>
                                         <option value="edd">EDD Report</option>

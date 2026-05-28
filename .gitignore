@@ -1,5 +1,11 @@
 .env
+.env.*
+!.env.example
 uploads/
 cache/
 __pycache__/
+*.py[cod]
 .venv/
+Dashboard (Format).xlsx
+*.log
+tools/local_checks/

@@ -2451,6 +2451,23 @@
         });
     }
 
+    function initPasswordToggles() {
+        document.querySelectorAll(".password-field").forEach(function (field) {
+            const input = field.querySelector('input[type="password"], input[type="text"]');
+            const toggle = field.querySelector(".password-toggle");
+            if (!input || !toggle) return;
+
+            toggle.addEventListener("click", function () {
+                const isVisible = input.type === "text";
+                input.type = isVisible ? "password" : "text";
+                toggle.classList.toggle("is-visible", !isVisible);
+                toggle.setAttribute("aria-pressed", !isVisible ? "true" : "false");
+                toggle.setAttribute("aria-label", !isVisible ? "Hide password" : "Show password");
+                input.focus();
+            });
+        });
+    }
+
     function initLogoutLink() {
         const logoutLink = document.getElementById("logoutLink");
         if (!logoutLink) return;
@@ -2486,7 +2503,7 @@
         const cleaned = String(value || "").trim().toLowerCase();
         if (!cleaned) return "";
         if (cleaned === "hourly") return "hourly_kwh";
-        if (cleaned === "hourly_kwh" || cleaned === "hourly_kw" || cleaned === "edd" || cleaned === "energization" || cleaned === "other") {
+        if (cleaned === "hourly_kwh" || cleaned === "hourly_kw" || cleaned === "edd" || cleaned === "energization" || cleaned === "dashboard_metrics" || cleaned === "other") {
             return cleaned;
         }
         return cleaned;
@@ -2499,6 +2516,9 @@
         }
         if (normalized.includes("edd")) {
             return "edd";
+        }
+        if (normalized.includes("dashboard") || normalized.includes("metrics")) {
+            return "dashboard_metrics";
         }
         if (/\bkwh\b/.test(normalized)) {
             return "hourly_kwh";
@@ -2770,6 +2790,10 @@
         if (typeof window.applyUploadFilters === "function") {
             window.applyUploadFilters();
         }
+        // Load dashboard metrics data
+        if (typeof window.refreshDashboardMetrics === "function") {
+            window.refreshDashboardMetrics();
+        }
     }
 
     function loadBootstrap() {
@@ -3003,6 +3027,12 @@
             if (typeof window.refreshEnergizationMapData === "function") {
                 window.refreshEnergizationMapData();
             }
+            if (typeof window.refreshDashboardMetrics === "function") {
+                window.refreshDashboardMetrics();
+            }
+            if (typeof window.refreshDashboardMetricsCharts === "function") {
+                window.refreshDashboardMetricsCharts();
+            }
         });
     }
 
@@ -3159,6 +3189,12 @@
                 }
                 if (typeof window.refreshEnergizationMapData === "function") {
                     window.refreshEnergizationMapData();
+                }
+                if (typeof window.refreshDashboardMetrics === "function") {
+                    window.refreshDashboardMetrics();
+                }
+                if (typeof window.refreshDashboardMetricsCharts === "function") {
+                    window.refreshDashboardMetricsCharts();
                 }
                 if (submitButton) {
                     submitButton.disabled = false;
@@ -4261,7 +4297,7 @@
             status.classList.toggle("is-visible", !!message);
         }
 
-        function renderTable(labels, values) {
+        function renderTable(labels, values, peak) {
             if (!tableBody) return;
             tableBody.innerHTML = "";
             if (!labels || labels.length === 0) {
@@ -4273,22 +4309,15 @@
                 tableBody.appendChild(row);
                 return;
             }
-            const numeric = (values || []).filter(function (val) {
-                return typeof val === "number" && Number.isFinite(val);
-            });
-            const minValue = numeric.length ? Math.min.apply(null, numeric) : null;
-            const maxValue = numeric.length ? Math.max.apply(null, numeric) : null;
+            const highlightIndex = getPeakHighlightIndex(values, peak);
             labels.forEach(function (label, idx) {
                 const row = document.createElement("tr");
                 const monthCell = document.createElement("td");
                 monthCell.textContent = toShortMonth(label);
                 const valueCell = document.createElement("td");
                 const value = values[idx];
-                if (typeof value === "number" && Number.isFinite(value)) {
-                    if ((minValue !== null && Math.abs(value - minValue) < 1e-6) ||
-                        (maxValue !== null && Math.abs(value - maxValue) < 1e-6)) {
-                        monthCell.classList.add("table-highlight-text");
-                    }
+                if (highlightIndex === idx) {
+                    monthCell.classList.add("table-highlight-text");
                 }
                 valueCell.textContent = (typeof value === "number" && Number.isFinite(value))
                     ? numberTick(value)
@@ -4309,7 +4338,25 @@
         }
 
         function peakColor(peak) {
-            return peak === "lowest" ? "#2563eb" : "#f97316";
+            return "#fde68a";
+        }
+
+        function getPeakHighlightIndex(values, peak) {
+            const numeric = [];
+            (values || []).forEach(function (value, index) {
+                if (typeof value === "number" && Number.isFinite(value)) {
+                    numeric.push({ value: value, index: index });
+                }
+            });
+            if (numeric.length === 0) return null;
+
+            const targetValue = normalizePeak(peak) === "lowest"
+                ? Math.min.apply(null, numeric.map(function (item) { return item.value; }))
+                : Math.max.apply(null, numeric.map(function (item) { return item.value; }));
+            const target = numeric.find(function (item) {
+                return Math.abs(item.value - targetValue) < 1e-6;
+            });
+            return target ? target.index : null;
         }
 
         function setMonthlyStatus(message) {
@@ -4358,7 +4405,7 @@
 
             const barColors = labels.map(function (_, idx) {
                 if (typeof highlightIndex === "number" && idx === highlightIndex) {
-                    return "#facc15";
+                    return "#fde68a";
                 }
                 return "#2563eb";
             });
@@ -4525,9 +4572,12 @@
             const values = payload.values || [];
             const metric = payload.metric || "Load (kW)";
             const peak = normalizePeak(payload.peak || peakSelect.value);
-            const colors = displayLabels.map(function () { return peakColor(peak); });
+            const highlightIndex = getPeakHighlightIndex(values, peak);
+            const colors = displayLabels.map(function (_, index) {
+                return index === highlightIndex ? peakColor(peak) : "#94a3b8";
+            });
             const datasetLabel = `${peakLabel(peak)} ${metric}`;
-            renderTable(labels, values);
+            renderTable(labels, values, peak);
 
             if (chart) {
                 chart.data.labels = displayLabels;
@@ -5023,6 +5073,365 @@
         window.refreshSystemLossYears = loadYears;
         loadYears();
     }
+
+    function loadDashboardMetricsData() {
+        return fetchJson("/data").then(function (result) {
+            if (!result.ok || !result.payload) return;
+            const uploads = Array.isArray(result.payload.items) ? result.payload.items : [];
+            const dashboardMetricsUploads = uploads
+                .filter(function (item) {
+                    return String(item.category || "").toLowerCase() === "dashboard_metrics";
+                })
+                .sort(function (a, b) {
+                    const aDate = Date.parse(a.uploaded_at || "") || 0;
+                    const bDate = Date.parse(b.uploaded_at || "") || 0;
+                    return bDate - aDate;
+                });
+
+            if (dashboardMetricsUploads.length === 0) {
+                window.dashboardMetricsPayload = null;
+                return null;
+            }
+
+            const latestMetricsUpload = dashboardMetricsUploads[0];
+            const data = latestMetricsUpload.json_data || {};
+            const metrics = data.dashboard_metrics || {};
+            window.dashboardMetricsPayload = metrics;
+            window.dashboardMetricsUpload = latestMetricsUpload;
+
+            if (typeof window.refreshSalesYears === "function") {
+                window.refreshSalesYears();
+            }
+            if (typeof window.refreshSystemLossYears === "function") {
+                window.refreshSystemLossYears();
+            }
+            if (typeof window.refreshAnnualKwYears === "function") {
+                window.refreshAnnualKwYears();
+            }
+            return metrics;
+        }).catch(function (error) {
+            console.warn("Failed to load dashboard metrics:", error);
+            return null;
+        });
+    }
+
+    function extractMonthlyValues(metricData) {
+        const months = [
+            "January", "February", "March", "April", "May", "June",
+            "July", "August", "September", "October", "November", "December"
+        ];
+
+        const values = [];
+        const rows = metricData.data || [];
+
+        // Get the latest row with data
+        for (let i = rows.length - 1; i >= 0; i--) {
+            const row = rows[i];
+            if (row && row.data) {
+                months.forEach(function (month) {
+                    values.push(row.data[month]);
+                });
+                break;
+            }
+        }
+
+        return {
+            labels: months,
+            values: values
+        };
+    }
+
+    function updateLoadCurveChart(metricData) {
+        const select = document.getElementById("annualKwYearSelect");
+        const canvas = document.getElementById("annualKwChart");
+        if (!select || !canvas || !window.Chart) return;
+
+        const monthlyData = extractMonthlyValues(metricData);
+
+        // Create a simple bar chart
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+
+        // Clear existing chart if any
+        if (canvas.chart) {
+            canvas.chart.destroy();
+        }
+
+        canvas.chart = new window.Chart(ctx, {
+            type: "bar",
+            data: {
+                labels: monthlyData.labels,
+                datasets: [{
+                    label: "Load Curve (kW)",
+                    data: monthlyData.values,
+                    backgroundColor: "rgba(54, 162, 235, 0.8)",
+                    borderColor: "rgba(54, 162, 235, 1)",
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: true,
+                plugins: {
+                    legend: { display: true },
+                    title: { display: false }
+                },
+                scales: {
+                    y: { beginAtZero: true }
+                }
+            }
+        });
+
+        // Populate year select with available years from data
+        const rows = metricData.data || [];
+        const years = [];
+        rows.forEach(function (row) {
+            if (row.period) {
+                const year = String(row.period).split(".")[0];
+                if (year && years.indexOf(year) === -1) {
+                    years.push(year);
+                }
+            }
+        });
+
+        select.innerHTML = "";
+        years.forEach(function (year) {
+            const option = document.createElement("option");
+            option.value = year;
+            option.textContent = year;
+            select.appendChild(option);
+        });
+    }
+
+    function updateSalesChart(metricData) {
+        const select = document.getElementById("salesYearSelect");
+        const canvas = document.getElementById("salesLineChart");
+        if (!select || !canvas || !window.Chart) return;
+
+        const monthlyData = extractMonthlyValues(metricData);
+
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+
+        if (canvas.chart) {
+            canvas.chart.destroy();
+        }
+
+        canvas.chart = new window.Chart(ctx, {
+            type: "line",
+            data: {
+                labels: monthlyData.labels,
+                datasets: [{
+                    label: "Total KWH Sold",
+                    data: monthlyData.values,
+                    borderColor: "rgba(75, 192, 75, 1)",
+                    backgroundColor: "rgba(75, 192, 75, 0.1)",
+                    tension: 0.3,
+                    fill: true
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: true,
+                plugins: {
+                    legend: { display: true }
+                },
+                scales: {
+                    y: { beginAtZero: true }
+                }
+            }
+        });
+
+        const rows = metricData.data || [];
+        const years = [];
+        rows.forEach(function (row) {
+            if (row.period) {
+                const year = String(row.period).split(".")[0];
+                if (year && years.indexOf(year) === -1) {
+                    years.push(year);
+                }
+            }
+        });
+
+        select.innerHTML = "";
+        years.forEach(function (year) {
+            const option = document.createElement("option");
+            option.value = year;
+            option.textContent = year;
+            select.appendChild(option);
+        });
+    }
+
+    function updateSystemLossChart(systemLossKwhData, systemLossPercentData) {
+        const yearSelect = document.getElementById("systemLossYearSelect");
+        const compareYearSelect = document.getElementById("systemLossCompareYearSelect");
+        if (!yearSelect || !compareYearSelect) return;
+
+        const rows = Array.isArray(systemLossKwhData && systemLossKwhData.data) ? systemLossKwhData.data : [];
+        const years = [];
+        rows.forEach(function (row) {
+            if (row && row.period) {
+                const year = String(row.period).split(".")[0];
+                if (year && years.indexOf(year) === -1) {
+                    years.push(year);
+                }
+            }
+        });
+
+        yearSelect.innerHTML = "";
+        compareYearSelect.innerHTML = "";
+
+        years.forEach(function (year) {
+            const option = document.createElement("option");
+            option.value = year;
+            option.textContent = year;
+            yearSelect.appendChild(option);
+        });
+
+        const noneOption = document.createElement("option");
+        noneOption.value = "";
+        noneOption.textContent = "None";
+        compareYearSelect.appendChild(noneOption);
+        years.forEach(function (year) {
+            const option = document.createElement("option");
+            option.value = year;
+            option.textContent = year;
+            compareYearSelect.appendChild(option);
+        });
+    }
+
+    function getDashboardMetricYears(metrics, keys) {
+        const years = [];
+        (keys || []).forEach(function (key) {
+            const rows = (metrics && metrics[key] && metrics[key].data) || [];
+            rows.forEach(function (row) {
+                const year = parseInt(String(row.period || "").match(/\d{4}/), 10);
+                if (year && years.indexOf(year) === -1) {
+                    years.push(year);
+                }
+            });
+        });
+        return years.sort(function (a, b) { return b - a; });
+    }
+
+    function getDashboardMetricForYear(metricData, year) {
+        const rows = (metricData && metricData.data) || [];
+        const selected = rows.find(function (row) {
+            return parseInt(String(row.period || "").match(/\d{4}/), 10) === Number(year);
+        });
+        if (!selected) return null;
+        return { data: [selected] };
+    }
+
+    function updateInterruptionCharts(saidiData, saifiData, maifiData) {
+        const interruptionMetrics = [
+            { data: saidiData, id: "saidiChart", label: "SAIDI" },
+            { data: saifiData, id: "saifiChart", label: "SAIFI" },
+            { data: maifiData, id: "maifiChart", label: "MAIFI" }
+        ];
+
+        interruptionMetrics.forEach(function (metric) {
+            if (!metric.data) return;
+            const canvas = document.getElementById(metric.id);
+            if (!canvas || !window.Chart) return;
+            const monthlyData = extractMonthlyValues(metric.data);
+            const ctx = canvas.getContext("2d");
+            if (!ctx) return;
+            if (canvas.chart) {
+                canvas.chart.destroy();
+            }
+
+            canvas.chart = new window.Chart(ctx, {
+                type: "line",
+                data: {
+                    labels: monthlyData.labels,
+                    datasets: [{
+                        label: metric.label,
+                        data: monthlyData.values,
+                        borderColor: metric.label === "SAIDI" ? "#ef4444" : metric.label === "SAIFI" ? "#2563eb" : "#f59e0b",
+                        backgroundColor: metric.label === "SAIDI" ? "rgba(239, 68, 68, 0.2)" : metric.label === "SAIFI" ? "rgba(37, 99, 235, 0.15)" : "rgba(245, 158, 11, 0.18)",
+                        tension: 0.3,
+                        fill: true,
+                        pointRadius: 4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    plugins: {
+                        legend: { display: true }
+                    },
+                    scales: {
+                        y: { beginAtZero: true }
+                    }
+                }
+            });
+        });
+    }
+
+    function initDashboardMetricsInterruptionCharts() {
+        const yearSelect = document.getElementById("interruptionYearSelect");
+        const status = document.getElementById("interruptionStatus");
+        if (!yearSelect || !window.Chart) return;
+
+        function setStatus(message) {
+            if (!status) return;
+            status.textContent = message || "";
+            status.classList.toggle("is-visible", !!message);
+        }
+
+        function renderForYear(year) {
+            const metrics = window.dashboardMetricsPayload || {};
+            if (!year || !metrics.saidi || !metrics.saifi || !metrics.maifi) {
+                setStatus("Upload Dashboard Metrics to view interruption charts.");
+                return;
+            }
+            setStatus("");
+            updateInterruptionCharts(
+                getDashboardMetricForYear(metrics.saidi, year),
+                getDashboardMetricForYear(metrics.saifi, year),
+                getDashboardMetricForYear(metrics.maifi, year)
+            );
+        }
+
+        function refresh() {
+            loadDashboardMetricsData().then(function () {
+                const metrics = window.dashboardMetricsPayload || {};
+                const years = getDashboardMetricYears(metrics, ["saidi", "saifi", "maifi"]);
+                const previous = yearSelect.value || "";
+                yearSelect.innerHTML = "";
+                if (years.length === 0) {
+                    const option = document.createElement("option");
+                    option.value = "";
+                    option.textContent = "No uploads yet";
+                    yearSelect.appendChild(option);
+                    yearSelect.disabled = true;
+                    setStatus("Upload Dashboard Metrics to view interruption charts.");
+                    return;
+                }
+                yearSelect.disabled = false;
+                years.forEach(function (year) {
+                    const option = document.createElement("option");
+                    option.value = String(year);
+                    option.textContent = String(year);
+                    yearSelect.appendChild(option);
+                });
+                yearSelect.value = years.map(String).indexOf(previous) !== -1 ? previous : String(years[0]);
+                renderForYear(yearSelect.value);
+            });
+        }
+
+        yearSelect.addEventListener("change", function () {
+            renderForYear(yearSelect.value);
+        });
+
+        window.refreshDashboardMetricsCharts = refresh;
+        refresh();
+    }
+
+    window.refreshDashboardMetrics = function () {
+        loadDashboardMetricsData();
+    };
 
     function initSalesChart() {
         const yearSelect = document.getElementById("salesYearSelect");
@@ -5545,6 +5954,7 @@
         loadData(select.value);
     }
 
+    initPasswordToggles();
     initLoginForm();
     initLogoutLink();
 
@@ -5563,6 +5973,7 @@
         initHourlyDayChart();
         initHourlyDayKwChart();
         initAnnualKwChart();
+        initDashboardMetricsInterruptionCharts();
 
         if (!mapElement) {
             initSvgOverlayMap();

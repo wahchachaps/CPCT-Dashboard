@@ -1,4 +1,4 @@
-import json
+﻿import json
 import math
 import os
 import re
@@ -118,6 +118,7 @@ CATEGORY_OPTIONS = {
     "hourly": "Hourly Loading (Legacy)",
     "hourly_kwh": "Hourly Loading (kWh)",
     "hourly_kw": "Hourly Loading (kW)",
+    "dashboard_metrics": "Dashboard Metrics",
     "other": "Other"
 }
 ENERGIZATION_FILENAME_RE = re.compile(
@@ -178,37 +179,118 @@ def get_supabase() -> "Client":
 
 def load_manifest(include_data=False):
     if not supabase_enabled():
-        return []
+        # Fallback: load manifests from local uploads JSON directory when Supabase
+        # is not configured. Each JSON file should be named <stored_name>.json
+        # and may contain metadata such as original_name, uploaded_at, year,
+        # month, category and the full data payload under top-level keys.
+        out = []
+        try:
+            if not os.path.isdir(UPLOADS_JSON_DIR):
+                return []
+            for fname in os.listdir(UPLOADS_JSON_DIR):
+                if not fname.lower().endswith(".json"):
+                    continue
+                stored_name = fname[:-5]
+                path = os.path.join(UPLOADS_JSON_DIR, fname)
+                try:
+                    with open(path, "r", encoding="utf-8") as fh:
+                        file_data = json.load(fh)
+                except Exception:
+                    file_data = {}
+
+                entry = {
+                    "id": str(file_data.get("id") or stored_name),
+                    "original_name": str(file_data.get("original_name") or file_data.get("label") or stored_name),
+                    "stored_name": stored_name,
+                    "uploaded_at": str(file_data.get("uploaded_at") or ""),
+                    "year": file_data.get("year"),
+                    "month": file_data.get("month"),
+                    "category": file_data.get("category"),
+                }
+                if include_data:
+                    entry["data_json"] = file_data
+                out.append(entry)
+        except Exception:
+            return []
+        return out
+
+    # Supabase path
     columns = "*"
     if not include_data:
         columns = "id,original_name,stored_name,uploaded_at,year,month,category,uploaded_by"
     try:
         response = get_supabase().table("uploads").select(columns).order("uploaded_at", desc=True).execute()
         data = response.data if hasattr(response, "data") else response.get("data", [])
-        return data or []
+        entries = data or []
+
+        # If include_data is True but Supabase didn't return data_json, try loading from local JSON
+        if include_data:
+            for entry in entries:
+                if not entry.get("data_json") and entry.get("stored_name"):
+                    local_data = load_upload_json(entry.get("stored_name"))
+                    if local_data:
+                        entry["data_json"] = local_data
+
+        return entries or []
     except Exception:
         return []
 
 
 def fetch_upload(upload_id):
     if not supabase_enabled():
+        # Fallback to local JSON manifests
+        try:
+            entries = load_manifest(include_data=True)
+            for entry in entries:
+                if str(entry.get("id")) == str(upload_id) or str(entry.get("stored_name")) == str(upload_id):
+                    return entry
+        except Exception:
+            pass
         return None
+
     try:
         response = get_supabase().table("uploads").select("*").eq("id", upload_id).limit(1).execute()
         data = response.data if hasattr(response, "data") else response.get("data", [])
-        return data[0] if data else None
+        if data and len(data) > 0:
+            entry = data[0]
+            # If data_json is not in Supabase entry, try to load from local JSON file
+            if not entry.get("data_json") and entry.get("stored_name"):
+                local_data = load_upload_json(entry.get("stored_name"))
+                if local_data:
+                    entry["data_json"] = local_data
+            return entry
+        return None
     except Exception:
+        # Fallback to local JSON if Supabase query fails
+        try:
+            entries = load_manifest(include_data=True)
+            for entry in entries:
+                if str(entry.get("id")) == str(upload_id) or str(entry.get("stored_name")) == str(upload_id):
+                    return entry
+        except Exception:
+            pass
         return None
 
 
 def insert_upload(entry):
+    if not supabase_enabled():
+        return entry
     response = get_supabase().table("uploads").insert(entry).execute()
     data = response.data if hasattr(response, "data") else response.get("data", [])
     return data[0] if data else None
 
 
 def delete_upload_entry(upload_id):
-    get_supabase().table("uploads").delete().eq("id", upload_id).execute()
+    entry = fetch_upload(upload_id)
+    if supabase_enabled():
+        get_supabase().table("uploads").delete().eq("id", upload_id).execute()
+    if entry and entry.get("stored_name"):
+        json_path = get_upload_json_path(entry.get("stored_name"))
+        try:
+            if json_path and os.path.isfile(json_path):
+                os.remove(json_path)
+        except OSError:
+            pass
 
 
 def get_current_user():
@@ -627,20 +709,29 @@ def entry_matches_category(entry, category):
 
 
 def get_entry_data(entry):
-    stored_name = entry.get("stored_name") if isinstance(entry, dict) else None
-    file_data = load_upload_json(stored_name)
-    if isinstance(file_data, dict):
-        return file_data
-    raw = entry.get("data_json") if isinstance(entry, dict) else None
-    if not raw:
+    if not isinstance(entry, dict):
         return {}
+
+    # First priority: load from local JSON file
+    stored_name = entry.get("stored_name")
+    if stored_name:
+        file_data = load_upload_json(stored_name)
+        if isinstance(file_data, dict) and file_data:
+            return file_data
+
+    # Second priority: use data_json from entry (Supabase)
+    raw = entry.get("data_json")
     if isinstance(raw, str):
         try:
-            return json.loads(raw)
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return parsed
         except json.JSONDecodeError:
-            return {}
-    if isinstance(raw, dict):
+            pass
+    elif isinstance(raw, dict) and raw:
         return raw
+
+    # Fallback: return empty dict (will show "no data" to user)
     return {}
 
 
@@ -1458,9 +1549,159 @@ def extract_energization_map_from_xl(xl):
     }, None
 
 
+def extract_dashboard_metrics_from_xl(xl):
+    """
+    Extract data from all sheets in the dashboard Excel file.
+    Expected sheets: Load Curve (Kw), Sales (Kwh), System Loss (Kwh),
+    System Loss (%), (Interruption) SAIDI, (Interruption) SAIFI, (Interruption) MAIFI
+    """
+    try:
+        sheet_names = xl.sheet_names
+        metrics = {}
+
+        sheet_mapping = {
+            "Load Curve (Kw)": "load_curve",
+            "Sales (Kwh)": "sales",
+            "System Loss (Kwh)": "system_loss_kwh",
+            "System Loss (%)": "system_loss_percent",
+            "(Interruption) SAIDI": "saidi",
+            "(Interruption) SAIFI": "saifi",
+            "(Interruption) MAIFI": "maifi"
+        }
+
+        for excel_sheet_name, metric_key in sheet_mapping.items():
+            if excel_sheet_name not in sheet_names:
+                continue
+
+            try:
+                df = xl.parse(excel_sheet_name)
+
+                # Ensure Year/Month is the first column
+                if "Year/Month" not in df.columns:
+                    return None, f"Missing 'Year/Month' column in sheet '{excel_sheet_name}'"
+
+                # Convert to appropriate format
+                data_rows = []
+                for idx, row in df.iterrows():
+                    raw_period = row["Year/Month"]
+                    if pd.isna(raw_period):
+                        continue
+                    if isinstance(raw_period, (int, float)) and float(raw_period).is_integer():
+                        year_month = str(int(raw_period))
+                    else:
+                        year_month = str(raw_period).strip()
+                    monthly_data = {}
+
+                    # Extract monthly values
+                    for month_name in MONTH_NAMES:
+                        if month_name in df.columns:
+                            val = row[month_name]
+                            try:
+                                monthly_data[month_name] = float(val) if pd.notna(val) else None
+                            except (ValueError, TypeError):
+                                monthly_data[month_name] = None
+
+                    data_rows.append({
+                        "period": year_month,
+                        "data": monthly_data
+                    })
+
+                metrics[metric_key] = {
+                    "sheet_name": excel_sheet_name,
+                    "data": data_rows,
+                    "row_count": len(data_rows)
+                }
+
+            except Exception as e:
+                return None, f"Error processing sheet '{excel_sheet_name}': {str(e)}"
+
+        if not metrics:
+            return None, "No recognized sheets found in the Excel file."
+
+        return {
+            "dashboard_metrics": metrics,
+            "sheets_processed": len(metrics),
+            "available_metrics": list(metrics.keys())
+        }, None
+
+    except Exception as e:
+        return None, f"Error reading Excel file: {str(e)}"
+
+
+def parse_dashboard_metric_year(period):
+    text = str(period or "").strip()
+    if not text:
+        return None
+    numeric = parse_numeric_cell(text)
+    if numeric is not None and float(numeric).is_integer():
+        return int(numeric)
+    match = re.search(r"\b(20\d{2}|19\d{2})\b", text)
+    return int(match.group(1)) if match else None
+
+
+def get_dashboard_metrics_payload(entry):
+    data = get_entry_data(entry)
+    metrics = data.get("dashboard_metrics")
+    return metrics if isinstance(metrics, dict) else {}
+
+
+def get_latest_dashboard_metrics(entries):
+    selected = None
+    for entry in entries:
+        if get_entry_category(entry) != "dashboard_metrics":
+            continue
+        metrics = get_dashboard_metrics_payload(entry)
+        if not metrics:
+            continue
+        if not selected or entry.get("uploaded_at", "") > selected.get("uploaded_at", ""):
+            selected = entry
+    return selected
+
+
+def get_dashboard_metric(entries, metric_key):
+    entry = get_latest_dashboard_metrics(entries)
+    if not entry:
+        return None
+    metric = get_dashboard_metrics_payload(entry).get(metric_key)
+    return metric if isinstance(metric, dict) else None
+
+
+def get_dashboard_metric_years(entries, metric_keys):
+    years = set()
+    latest = get_latest_dashboard_metrics(entries)
+    if not latest:
+        return []
+    metrics = get_dashboard_metrics_payload(latest)
+    for metric_key in metric_keys:
+        metric = metrics.get(metric_key) or {}
+        for row in metric.get("data") or []:
+            year = parse_dashboard_metric_year(row.get("period"))
+            if year is not None and any(parse_numeric_cell((row.get("data") or {}).get(month)) is not None for month in MONTH_NAMES):
+                years.add(year)
+    return sorted(years, reverse=True)
+
+
+def get_dashboard_metric_values(metric, year, percent=False):
+    if not metric:
+        return None
+    for row in metric.get("data") or []:
+        if parse_dashboard_metric_year(row.get("period")) != year:
+            continue
+        data = row.get("data") or {}
+        values = []
+        for month in MONTH_NAMES:
+            value = parse_numeric_cell(data.get(month))
+            if value is not None and percent:
+                value = normalize_percent_value(value)
+            values.append(float(value) if value is not None else None)
+        if any(value is not None for value in values):
+            return values
+    return None
+
+
 def precompute_upload_data(file_bytes, filename, category):
     ext = os.path.splitext(filename)[1].lower()
-    if ext == ".csv" and category in ("hourly", "hourly_kwh", "hourly_kw", "edd", "energization"):
+    if ext == ".csv" and category in ("hourly", "hourly_kwh", "hourly_kw", "edd", "energization", "dashboard_metrics"):
         return None, "This chart requires an Excel file."
     try:
         xl = pd.ExcelFile(BytesIO(file_bytes))
@@ -1533,6 +1774,12 @@ def precompute_upload_data(file_bytes, filename, category):
         return {
             "energization_map": energization_payload
         }, None
+
+    if category == "dashboard_metrics":
+        metrics_payload, metrics_error = extract_dashboard_metrics_from_xl(xl)
+        if metrics_error:
+            return None, metrics_error
+        return metrics_payload, None
 
     return {}, None
 
@@ -2620,6 +2867,15 @@ def extract_peak_load(file_path):
 
 
 def build_peak_load_year_payload(entries, year):
+    dashboard_values = get_dashboard_metric_values(get_dashboard_metric(entries, "load_curve"), year)
+    if dashboard_values:
+        return {
+            "labels": MONTH_NAMES[:],
+            "values": dashboard_values,
+            "metric": "Peak Load (kW)",
+            "year": year
+        }
+
     edd_entries = {}
     kw_entries = {}
 
@@ -2699,6 +2955,15 @@ def derive_sales_total_kwh_sold(data):
 
 
 def build_sales_year_payload(entries, year):
+    dashboard_values = get_dashboard_metric_values(get_dashboard_metric(entries, "sales"), year)
+    if dashboard_values:
+        return {
+            "labels": MONTH_NAMES[:],
+            "values": dashboard_values,
+            "metric": "Total KWH Sold",
+            "year": year
+        }
+
     edd_entries = {}
     for entry in entries:
         if get_entry_category(entry) != "edd":
@@ -2739,7 +3004,7 @@ def build_sales_year_payload(entries, year):
 
 
 def build_sales_year_options(entries):
-    years = set()
+    years = set(get_dashboard_metric_years(entries, ["sales"]))
     for entry in entries:
         if get_entry_category(entry) != "edd":
             continue
@@ -2758,6 +3023,18 @@ def build_sales_year_options(entries):
 
 
 def build_system_loss_year_payload(entries, year):
+    dashboard_values = get_dashboard_metric_values(get_dashboard_metric(entries, "system_loss_kwh"), year)
+    dashboard_percents = get_dashboard_metric_values(get_dashboard_metric(entries, "system_loss_percent"), year, percent=True)
+    if dashboard_values or dashboard_percents:
+        return {
+            "labels": MONTH_NAMES[:],
+            "values": dashboard_values or [None] * 12,
+            "percents": dashboard_percents or [None] * 12,
+            "value_metric": "System Loss",
+            "percent_metric": "System Loss (%)",
+            "year": year
+        }
+
     edd_entries = {}
     for entry in entries:
         if get_entry_category(entry) != "edd":
@@ -2875,6 +3152,16 @@ def build_hourly_year_payload(entries, year):
 
 
 def build_kw_annual_payload(entries, year, peak_type="highest"):
+    dashboard_values = get_dashboard_metric_values(get_dashboard_metric(entries, "load_curve"), year)
+    if dashboard_values:
+        return {
+            "labels": MONTH_NAMES[:],
+            "values": dashboard_values,
+            "metric": "Load (kW)",
+            "year": year,
+            "peak": (peak_type or "highest").strip().lower()
+        }
+
     month_entries = {}
     for entry in entries:
         if not is_hourly_kw_entry(entry):
@@ -3053,11 +3340,6 @@ def upload_file():
         if wants_json_response():
             return jsonify({"error": "Unauthorized"}), 401
         return redirect(url_for("login"))
-    if not supabase_enabled():
-        if wants_json_response():
-            return jsonify({"error": SUPABASE_CONFIG_MESSAGE}), 500
-        return redirect(url_for("dashboard", upload_error="supabase") + "#section-uploads")
-
     files = request.files.getlist("uploadFiles")
     if not files:
         if wants_json_response():
@@ -3093,23 +3375,35 @@ def upload_file():
             if wants_json_response():
                 return jsonify({"error": data_error}), 400
             return redirect(url_for("dashboard", upload_error="processing") + "#section-uploads")
-        _, json_error = write_upload_json(stored_name, data_json)
+        upload_id = str(uuid.uuid4())
+        uploaded_at = datetime.now().isoformat(timespec="seconds")
+        year, month = parse_year_month(original_name)
+        cached_data = dict(data_json or {})
+        cached_data.update({
+            "id": upload_id,
+            "original_name": original_name,
+            "stored_name": stored_name,
+            "uploaded_at": uploaded_at,
+            "year": year,
+            "month": month,
+            "category": selected_category
+        })
+        _, json_error = write_upload_json(stored_name, cached_data)
         if json_error:
             if wants_json_response():
                 return jsonify({"error": json_error}), 500
             return redirect(url_for("dashboard", upload_error="processing") + "#section-uploads")
 
-        year, month = parse_year_month(original_name)
         insert_upload({
-            "id": str(uuid.uuid4()),
+            "id": upload_id,
             "original_name": original_name,
             "stored_name": stored_name,
-            "uploaded_at": datetime.now().isoformat(timespec="seconds"),
+            "uploaded_at": uploaded_at,
             "year": year,
             "month": month,
             "category": selected_category,
             "uploaded_by": getattr(user, "id", None),
-            "data_json": data_json,
+            "data_json": cached_data,
             "data_version": 2
         })
         added += 1
@@ -3314,9 +3608,6 @@ def api_upload():
     user = get_current_user()
     if not user:
         return jsonify({"error": "Unauthorized"}), 401
-    if not supabase_enabled():
-        return jsonify({"error": SUPABASE_CONFIG_MESSAGE}), 500
-
     files = request.files.getlist("uploadFiles")
     if not files:
         return jsonify({"error": "No files uploaded."}), 400
@@ -3346,21 +3637,33 @@ def api_upload():
         data_json, data_error = precompute_upload_data(payload, original_name, selected_category)
         if data_error:
             return jsonify({"error": data_error}), 400
-        _, json_error = write_upload_json(stored_name, data_json)
+        upload_id = str(uuid.uuid4())
+        uploaded_at = datetime.now().isoformat(timespec="seconds")
+        year, month = parse_year_month(original_name)
+        cached_data = dict(data_json or {})
+        cached_data.update({
+            "id": upload_id,
+            "original_name": original_name,
+            "stored_name": stored_name,
+            "uploaded_at": uploaded_at,
+            "year": year,
+            "month": month,
+            "category": selected_category
+        })
+        _, json_error = write_upload_json(stored_name, cached_data)
         if json_error:
             return jsonify({"error": json_error}), 500
 
-        year, month = parse_year_month(original_name)
         insert_upload({
-            "id": str(uuid.uuid4()),
+            "id": upload_id,
             "original_name": original_name,
             "stored_name": stored_name,
-            "uploaded_at": datetime.now().isoformat(timespec="seconds"),
+            "uploaded_at": uploaded_at,
             "year": year,
             "month": month,
             "category": selected_category,
             "uploaded_by": getattr(user, "id", None),
-            "data_json": data_json,
+            "data_json": cached_data,
             "data_version": 2
         })
         added += 1
@@ -3444,8 +3747,8 @@ def edd_hourly_year(year):
 def edd_hourly_kw_years():
     if not get_current_user():
         return jsonify({"error": "Unauthorized"}), 401
-    entries = load_manifest()
-    years = build_year_options(entries, category="hourly_kw")
+    entries = load_manifest(include_data=True)
+    years = sorted(set(build_year_options(entries, category="hourly_kw")) | set(get_dashboard_metric_years(entries, ["load_curve"])), reverse=True)
     return jsonify({"years": years})
 
 
@@ -3453,8 +3756,8 @@ def edd_hourly_kw_years():
 def edd_system_loss_years():
     if not get_current_user():
         return jsonify({"error": "Unauthorized"}), 401
-    entries = load_manifest()
-    years = build_year_options(entries, category="edd")
+    entries = load_manifest(include_data=True)
+    years = sorted(set(build_year_options(entries, category="edd")) | set(get_dashboard_metric_years(entries, ["system_loss_kwh", "system_loss_percent"])), reverse=True)
     return jsonify({"years": years})
 
 
@@ -3865,6 +4168,60 @@ def edd_sales_year(year):
 def logout():
     clear_session()
     return redirect(url_for("login"))
+
+
+@app.route("/api/dashboard-metrics/<upload_id>")
+def get_dashboard_metrics(upload_id):
+    """Get dashboard metrics from a multi-sheet Excel upload"""
+    if not get_current_user():
+        return jsonify({"error": "Unauthorized"}), 401
+
+    entry = fetch_upload(upload_id)
+    if not entry:
+        return jsonify({"error": "File not found"}), 404
+
+    if entry.get("category") != "dashboard_metrics":
+        return jsonify({"error": "This upload is not a dashboard metrics file"}), 400
+
+    data = entry.get("data_json", {})
+    metrics = data.get("dashboard_metrics", {})
+
+    return jsonify({
+        "file_name": entry.get("original_name", ""),
+        "uploaded_at": entry.get("uploaded_at", ""),
+        "metrics": metrics,
+        "available_metrics": data.get("available_metrics", []),
+        "sheets_processed": data.get("sheets_processed", 0)
+    })
+
+
+@app.route("/api/dashboard-metrics/<upload_id>/<metric_key>")
+def get_dashboard_metric_detail(upload_id, metric_key):
+    """Get specific metric data from dashboard metrics upload"""
+    if not get_current_user():
+        return jsonify({"error": "Unauthorized"}), 401
+
+    entry = fetch_upload(upload_id)
+    if not entry:
+        return jsonify({"error": "File not found"}), 404
+
+    if entry.get("category") != "dashboard_metrics":
+        return jsonify({"error": "This upload is not a dashboard metrics file"}), 400
+
+    data = entry.get("data_json", {})
+    metrics = data.get("dashboard_metrics", {})
+    metric = metrics.get(metric_key)
+
+    if not metric:
+        return jsonify({"error": f"Metric '{metric_key}' not found"}), 404
+
+    return jsonify({
+        "metric": metric_key,
+        "sheet_name": metric.get("sheet_name", ""),
+        "data": metric.get("data", []),
+        "row_count": metric.get("row_count", 0),
+        "file_name": entry.get("original_name", "")
+    })
 
 
 if __name__ == "__main__":
