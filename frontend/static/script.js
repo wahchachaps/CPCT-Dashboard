@@ -5616,14 +5616,21 @@
 
     function initDashboardMetricsInterruptionCharts() {
         const yearSelect = document.getElementById("interruptionYearSelect");
+        const comparisonYearSelect = document.getElementById("interruptionComparisonYearSelect");
         const compareYearSelect = document.getElementById("interruptionCompareYearSelect");
         const status = document.getElementById("interruptionStatus");
-        if (!yearSelect || !compareYearSelect || !window.Chart) return;
+        const mainChartsRow = document.getElementById("interruptionMainCharts");
+        if (!yearSelect || !comparisonYearSelect || !compareYearSelect || !window.Chart) return;
 
         function setStatus(message) {
             if (!status) return;
             status.textContent = message || "";
             status.classList.toggle("is-visible", !!message);
+        }
+
+        function showMainCharts(show) {
+            if (!mainChartsRow) return;
+            mainChartsRow.hidden = !show;
         }
 
         function buildMetricSet(metrics, year) {
@@ -5634,35 +5641,55 @@
             };
         }
 
-        function renderForYear(year, compareYear) {
+        function renderComparisonCharts(baseYear, compareYear) {
+            if (!baseYear || !compareYear || baseYear === compareYear) {
+                updateInterruptionCompareCharts("", "", null, null);
+                return;
+            }
+            const metrics = window.dashboardMetricsPayload || {};
+            const baseMetrics = buildMetricSet(metrics, baseYear);
+            const compareMetrics = buildMetricSet(metrics, compareYear);
+            if (!baseMetrics.saidi || !baseMetrics.saifi || !baseMetrics.maifi || !compareMetrics.saidi || !compareMetrics.saifi || !compareMetrics.maifi) {
+                updateInterruptionCompareCharts("", "", null, null);
+                return;
+            }
+            updateInterruptionCompareCharts(baseYear, compareYear, baseMetrics, compareMetrics);
+        }
+
+        function renderMainCharts(year) {
             const metrics = window.dashboardMetricsPayload || {};
             if (!year || !metrics.saidi || !metrics.saifi || !metrics.maifi) {
-                updateInterruptionCompareCharts("", "", null, null);
+                showMainCharts(false);
                 setStatus("Upload Dashboard Metrics to view interruption charts.");
+                updateInterruptionCompareCharts("", "", null, null);
+                return;
+            }
+            const selectedMetrics = buildMetricSet(metrics, year);
+            if (!selectedMetrics.saidi || !selectedMetrics.saifi || !selectedMetrics.maifi) {
+                showMainCharts(false);
+                setStatus("No interruption data found for selected year.");
+                updateInterruptionCompareCharts("", "", null, null);
                 return;
             }
             setStatus("");
-            const selectedMetrics = buildMetricSet(metrics, year);
+            showMainCharts(true);
             updateInterruptionCharts(selectedMetrics.saidi, selectedMetrics.saifi, selectedMetrics.maifi);
-
-            if (compareYear && compareYear !== year) {
-                const compareMetrics = buildMetricSet(metrics, compareYear);
-                updateInterruptionCompareCharts(year, compareYear, selectedMetrics, compareMetrics);
-            } else {
-                updateInterruptionCompareCharts("", "", null, null);
-            }
+            renderComparisonCharts(comparisonYearSelect.value, compareYearSelect.value);
         }
 
         function refresh() {
             setStatus("Loading Dashboard Metrics...");
             yearSelect.disabled = true;
+            comparisonYearSelect.disabled = true;
             compareYearSelect.disabled = true;
             loadDashboardMetricsData().then(function () {
                 const metrics = window.dashboardMetricsPayload || {};
                 const years = getDashboardMetricYears(metrics, ["saidi", "saifi", "maifi"]);
                 const previous = yearSelect.value || "";
+                const previousComparison = comparisonYearSelect.value || "";
                 const previousCompare = compareYearSelect.value || "";
                 yearSelect.innerHTML = "";
+                comparisonYearSelect.innerHTML = "";
                 compareYearSelect.innerHTML = "";
                 const noneOption = document.createElement("option");
                 noneOption.value = "";
@@ -5674,46 +5701,63 @@
                     option.textContent = "No uploads yet";
                     yearSelect.appendChild(option);
                     yearSelect.disabled = true;
+                    comparisonYearSelect.disabled = true;
                     compareYearSelect.disabled = true;
+                    showMainCharts(false);
                     updateInterruptionCompareCharts("", "", null, null);
                     setStatus("Upload Dashboard Metrics to view interruption charts.");
                     return;
                 }
-                yearSelect.disabled = false;
-                compareYearSelect.disabled = false;
                 years.forEach(function (year) {
                     const option = document.createElement("option");
                     option.value = String(year);
                     option.textContent = String(year);
                     yearSelect.appendChild(option);
 
+                    const comparisonOption = document.createElement("option");
+                    comparisonOption.value = String(year);
+                    comparisonOption.textContent = String(year);
+                    comparisonYearSelect.appendChild(comparisonOption);
+
                     const compareOption = document.createElement("option");
                     compareOption.value = String(year);
                     compareOption.textContent = String(year);
                     compareYearSelect.appendChild(compareOption);
                 });
+                yearSelect.disabled = false;
+                comparisonYearSelect.disabled = false;
+                compareYearSelect.disabled = false;
                 yearSelect.value = years.map(String).indexOf(previous) !== -1 ? previous : String(years[0]);
+                comparisonYearSelect.value = years.map(String).indexOf(previousComparison) !== -1 ? previousComparison : String(years[0]);
                 compareYearSelect.value = years.map(String).indexOf(previousCompare) !== -1 ? previousCompare : "";
-                renderForYear(yearSelect.value, compareYearSelect.value);
+                renderMainCharts(yearSelect.value);
             }).catch(function () {
                 yearSelect.innerHTML = "";
+                comparisonYearSelect.innerHTML = "";
                 compareYearSelect.innerHTML = "";
                 const option = document.createElement("option");
                 option.value = "";
                 option.textContent = "Unable to load years";
                 yearSelect.appendChild(option);
                 yearSelect.disabled = true;
+                comparisonYearSelect.disabled = true;
                 compareYearSelect.disabled = true;
+                showMainCharts(false);
+                updateInterruptionCompareCharts("", "", null, null);
                 setStatus("Unable to load Dashboard Metrics.");
             });
         }
 
         yearSelect.addEventListener("change", function () {
-            renderForYear(yearSelect.value, compareYearSelect.value);
+            renderMainCharts(yearSelect.value);
+        });
+
+        comparisonYearSelect.addEventListener("change", function () {
+            renderComparisonCharts(comparisonYearSelect.value, compareYearSelect.value);
         });
 
         compareYearSelect.addEventListener("change", function () {
-            renderForYear(yearSelect.value, compareYearSelect.value);
+            renderComparisonCharts(comparisonYearSelect.value, compareYearSelect.value);
         });
 
         window.refreshDashboardMetricsCharts = refresh;

@@ -413,28 +413,133 @@
 
                 <article class="panel-card section-card wide-card" id="section-system-loss">
                     <h2>System Loss</h2>
+                    <div class="uploaded-data-head">
+                        <div>
+                            <h3>System Loss (Monthly)</h3>
+                            <p class="upload-help">Based on EDD uploads.</p>
+                        </div>
+                        <div class="upload-filter">
+                            <label for="systemLossYearSelect">Year</label>
+                            <select id="systemLossYearSelect">
+                                <option value="">Loading years...</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="upload-chart-status" id="systemLossStatus"></div>
                     <div class="graph-layout two-col">
                         <div class="graph-card">
-                            <span class="chart-tag">EX</span>
-                            <h3>Systems Loss</h3>
-                            <canvas id="systemsLossChart"></canvas>
+                            <h3>System Loss</h3>
+                            <canvas id="systemLossBarChart"></canvas>
                         </div>
                         <div class="graph-card">
-                            <span class="chart-tag">EX</span>
-                            <h3>Forecasted Supply vs Demand</h3>
-                            <canvas id="forecastSupplyDemandChart"></canvas>
+                            <h3>System Loss (%)</h3>
+                            <canvas id="systemLossLineChart"></canvas>
+                        </div>
+                    </div>
+                    <div class="uploaded-data-head comparison-head">
+                        <div>
+                            <h3>System Loss Comparison</h3>
+                            <p class="upload-help">Compare two years without changing the main chart above.</p>
+                        </div>
+                        <div class="upload-filter">
+                            <label for="systemLossComparisonYearSelect">Year</label>
+                            <select id="systemLossComparisonYearSelect">
+                                <option value="">Loading years...</option>
+                            </select>
+                            <label for="systemLossCompareYearSelect">Compare Year</label>
+                            <select id="systemLossCompareYearSelect">
+                                <option value="">None</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="graph-layout two-col comparison-chart-row" id="systemLossCompareCharts" hidden>
+                        <div class="graph-card">
+                            <h3>System Loss Comparison</h3>
+                            <canvas id="systemLossCompareBarChart"></canvas>
+                        </div>
+                        <div class="graph-card">
+                            <h3>System Loss (%) Comparison</h3>
+                            <canvas id="systemLossComparePercentChart"></canvas>
                         </div>
                     </div>
                 </article>
 
-                <article class="panel-card section-card" id="section-power-interruption">
+                <article class="panel-card section-card wide-card" id="section-power-interruption">
                     <h2>Power Interruption</h2>
-                    <p class="section-note">Add interruption metrics here.</p>
+                    <div class="uploaded-data-head">
+                        <div>
+                            <h3>Reliability Indices</h3>
+                            <p class="upload-help">Based on Dashboard Metrics uploads.</p>
+                        </div>
+                        <div class="upload-filter">
+                            <label for="interruptionYearSelect">Year</label>
+                            <select id="interruptionYearSelect">
+                                <option value="">Loading years...</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="upload-chart-status" id="interruptionStatus"></div>
+                    <div class="graph-layout three-col" id="interruptionMainCharts">
+                        <div class="graph-card">
+                            <h3>SAIDI</h3>
+                            <canvas id="saidiChart"></canvas>
+                        </div>
+                        <div class="graph-card">
+                            <h3>SAIFI</h3>
+                            <canvas id="saifiChart"></canvas>
+                        </div>
+                        <div class="graph-card">
+                            <h3>MAIFI</h3>
+                            <canvas id="maifiChart"></canvas>
+                        </div>
+                    </div>
+                    <div class="uploaded-data-head comparison-head">
+                        <div>
+                            <h3>Reliability Indices Comparison</h3>
+                            <p class="upload-help">Compare two years without changing the main charts above.</p>
+                        </div>
+                        <div class="upload-filter">
+                            <label for="interruptionComparisonYearSelect">Year</label>
+                            <select id="interruptionComparisonYearSelect">
+                                <option value="">Loading years...</option>
+                            </select>
+                            <label for="interruptionCompareYearSelect">Compare Year</label>
+                            <select id="interruptionCompareYearSelect">
+                                <option value="">None</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="graph-layout three-col comparison-chart-row" id="interruptionCompareCharts" hidden>
+                        <div class="graph-card">
+                            <h3>SAIDI Comparison</h3>
+                            <canvas id="saidiCompareChart"></canvas>
+                        </div>
+                        <div class="graph-card">
+                            <h3>SAIFI Comparison</h3>
+                            <canvas id="saifiCompareChart"></canvas>
+                        </div>
+                        <div class="graph-card">
+                            <h3>MAIFI Comparison</h3>
+                            <canvas id="maifiCompareChart"></canvas>
+                        </div>
+                    </div>
                 </article>
 
                 <article class="panel-card section-card wide-card" id="section-power-rates">
                     <h2>Power Rates</h2>
-                    <p class="section-note">Sample rates table and generation mix chart removed. Connect this section to real rate data.</p>
+                    <p class="section-note">View current Philippine electricity price references and market data.</p>
+                    <a class="power-rate-link" href="https://presyo.icsc.ngo/home" target="_blank" rel="noopener noreferrer">
+                        <span class="power-rate-icon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" focusable="false">
+                                <path d="M13 2 5 14h6l-1 8 9-13h-6z" />
+                            </svg>
+                        </span>
+                        <span class="power-rate-copy">
+                            <strong>Presyo Electricity Price Tracker</strong>
+                            <span>Open real-time power rate references from ICSC Presyo.</span>
+                        </span>
+                        <span class="power-rate-action">Open site</span>
+                    </a>
                 </article>
 
                 <article class="panel-card section-card wide-card" id="section-uploads">
