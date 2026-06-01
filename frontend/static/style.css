@@ -375,6 +375,10 @@ input {
     height: 300px !important;
 }
 
+.comparison-chart-row {
+    margin-top: 14px;
+}
+
 .rate-mix-panel {
     margin-top: 14px;
     border: 1px solid #dbe2ea;
@@ -433,6 +437,71 @@ input {
 
 .mix-block canvas {
     height: 290px !important;
+}
+
+.power-rate-link {
+    margin-top: 14px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    text-decoration: none;
+    color: #0f172a;
+    border: 1px solid #dbe2ea;
+    background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%);
+    border-radius: 10px;
+    padding: 16px;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+
+.power-rate-link:hover {
+    border-color: #94a3b8;
+    box-shadow: 0 12px 24px rgba(15, 23, 42, 0.08);
+    transform: translateY(-1px);
+}
+
+.power-rate-icon {
+    width: 42px;
+    height: 42px;
+    border-radius: 8px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: #0f172a;
+    color: #ffffff;
+    flex-shrink: 0;
+}
+
+.power-rate-icon svg {
+    width: 22px;
+    height: 22px;
+    fill: currentColor;
+}
+
+.power-rate-copy {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+    flex: 1;
+}
+
+.power-rate-copy strong {
+    font-size: 1rem;
+}
+
+.power-rate-copy span {
+    color: #475569;
+    font-size: 0.9rem;
+}
+
+.power-rate-action {
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    padding: 8px 10px;
+    color: #0f172a;
+    background: #ffffff;
+    font-weight: 700;
+    font-size: 0.85rem;
+    white-space: nowrap;
 }
 
 .demand-snapshot {
@@ -906,6 +975,19 @@ input {
     gap: 12px;
 }
 
+.uploaded-data-head.comparison-head {
+    align-items: center;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+    gap: 16px;
+    margin-top: 16px;
+}
+
+.uploaded-data-head.comparison-head .upload-filter {
+    min-width: 180px;
+    flex: 1 1 220px;
+}
+
 .uploaded-data-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1284,6 +1366,16 @@ input {
 
     .uploaded-data-grid {
         grid-template-columns: 1fr;
+    }
+
+    .power-rate-link {
+        align-items: flex-start;
+        flex-wrap: wrap;
+    }
+
+    .power-rate-action {
+        width: 100%;
+        text-align: center;
     }
 
 }

@@ -4749,14 +4749,20 @@
 
     function initSystemLossCharts() {
         const yearSelect = document.getElementById("systemLossYearSelect");
+        const comparisonYearSelect = document.getElementById("systemLossComparisonYearSelect");
         const compareYearSelect = document.getElementById("systemLossCompareYearSelect");
         const barCanvas = document.getElementById("systemLossBarChart");
         const lineCanvas = document.getElementById("systemLossLineChart");
+        const compareRow = document.getElementById("systemLossCompareCharts");
+        const compareBarCanvas = document.getElementById("systemLossCompareBarChart");
+        const comparePercentCanvas = document.getElementById("systemLossComparePercentChart");
         const status = document.getElementById("systemLossStatus");
-        if (!yearSelect || !compareYearSelect || !barCanvas || !lineCanvas || !window.Chart) return;
+        if (!yearSelect || !comparisonYearSelect || !compareYearSelect || !barCanvas || !lineCanvas || !window.Chart) return;
 
         let barChart = null;
         let lineChart = null;
+        let compareBarChart = null;
+        let comparePercentChart = null;
 
         function setStatus(message) {
             if (!status) return;
@@ -4807,8 +4813,6 @@
             }
 
             const yearLabel = payload.year ? String(payload.year) : "";
-            const compareYearLabel = comparePayload && comparePayload.year ? String(comparePayload.year) : "";
-
             const valueDatasets = [{
                 label: yearLabel ? `${valueMetric} ${yearLabel}` : valueMetric,
                 data: values,
@@ -4821,21 +4825,6 @@
                 backgroundColor: "#2563eb",
                 borderRadius: 2
             }];
-
-            if (comparePayload && comparePayload.labels && comparePayload.labels.length) {
-                valueDatasets.push({
-                    label: compareYearLabel ? `${valueMetric} ${compareYearLabel}` : `${valueMetric} (Compare)`,
-                    data: comparePayload.values || [],
-                    backgroundColor: "#9333ea",
-                    borderRadius: 2
-                });
-                percentDatasets.push({
-                    label: compareYearLabel ? `${percentMetric} ${compareYearLabel}` : `${percentMetric} (Compare)`,
-                    data: comparePayload.percents || [],
-                    backgroundColor: "#10b981",
-                    borderRadius: 2
-                });
-            }
 
             const barScale = valueNumbers.length
                 ? getScaleBounds(values, { beginAtZero: true, minPadding: 1, paddingRatio: 0.12 })
@@ -4919,7 +4908,103 @@
             }
         }
 
-        function loadData(year, compareYear) {
+        function updateCompareCharts(payload, comparePayload) {
+            if (!compareRow || !compareBarCanvas || !comparePercentCanvas) return;
+            const hasCompare = !!(comparePayload && comparePayload.labels && comparePayload.labels.length);
+            compareRow.hidden = !hasCompare;
+            if (!hasCompare) {
+                return;
+            }
+
+            const labels = payload.labels || comparePayload.labels || [];
+            const displayLabels = labels.map(toShortMonth);
+            const valueMetric = payload.value_metric || "System Loss";
+            const percentMetric = payload.percent_metric || "System Loss (%)";
+            const yearLabel = payload.year ? String(payload.year) : "Selected";
+            const compareYearLabel = comparePayload.year ? String(comparePayload.year) : "Compare";
+            const valueDatasets = [
+                {
+                    label: `${valueMetric} ${yearLabel}`,
+                    data: payload.values || [],
+                    backgroundColor: "#0f172a",
+                    borderRadius: 2
+                },
+                {
+                    label: `${valueMetric} ${compareYearLabel}`,
+                    data: comparePayload.values || [],
+                    backgroundColor: "#9333ea",
+                    borderRadius: 2
+                }
+            ];
+            const percentDatasets = [
+                {
+                    label: `${percentMetric} ${yearLabel}`,
+                    data: payload.percents || [],
+                    backgroundColor: "#2563eb",
+                    borderRadius: 2
+                },
+                {
+                    label: `${percentMetric} ${compareYearLabel}`,
+                    data: comparePayload.percents || [],
+                    backgroundColor: "#10b981",
+                    borderRadius: 2
+                }
+            ];
+            const valueScale = Object.assign({}, getScaleBounds([payload.values || [], comparePayload.values || []], { beginAtZero: true, minPadding: 1, paddingRatio: 0.12 }), {
+                title: { display: true, text: valueMetric },
+                ticks: { callback: numberTick }
+            });
+            const percentScale = Object.assign({}, getScaleBounds([payload.percents || [], comparePayload.percents || []], { beginAtZero: true, minPadding: 0.5, paddingRatio: 0.12 }), {
+                title: { display: true, text: percentMetric },
+                ticks: { callback: function (value) { return `${value}%`; } }
+            });
+
+            if (compareBarChart) {
+                compareBarChart.data.labels = displayLabels;
+                compareBarChart.data.datasets = valueDatasets;
+                compareBarChart.options.scales.y = valueScale;
+                compareBarChart.update();
+            } else {
+                compareBarChart = registerChart(new Chart(compareBarCanvas, {
+                    type: "bar",
+                    data: { labels: displayLabels, datasets: valueDatasets },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        layout: { padding: { top: 10, right: 12, bottom: 4, left: 6 } },
+                        plugins: { legend: { display: true } },
+                        scales: {
+                            x: { ticks: { autoSkip: true, maxTicksLimit: 12, padding: 6 } },
+                            y: valueScale
+                        }
+                    }
+                }));
+            }
+
+            if (comparePercentChart) {
+                comparePercentChart.data.labels = displayLabels;
+                comparePercentChart.data.datasets = percentDatasets;
+                comparePercentChart.options.scales.y = percentScale;
+                comparePercentChart.update();
+            } else {
+                comparePercentChart = registerChart(new Chart(comparePercentCanvas, {
+                    type: "bar",
+                    data: { labels: displayLabels, datasets: percentDatasets },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        layout: { padding: { top: 10, right: 12, bottom: 4, left: 6 } },
+                        plugins: { legend: { display: true } },
+                        scales: {
+                            x: { ticks: { autoSkip: true, maxTicksLimit: 12, padding: 6 } },
+                            y: percentScale
+                        }
+                    }
+                }));
+            }
+        }
+
+        function loadData(year) {
             if (!year) {
                 setStatus("Upload a file to view this chart.");
                 return;
@@ -4937,35 +5022,48 @@
                         return;
                     }
 
-                    if (!compareYear || compareYear === year) {
-                        updateCharts(payload, null);
-                        return;
-                    }
-
-                    fetchJson(`/api/edd-system-loss-year/${compareYear}`)
-                        .then(function (compareResult) {
-                            const comparePayload = compareResult.payload || {};
-                            if (compareResult.ok && comparePayload && comparePayload.labels && comparePayload.labels.length) {
-                                updateCharts(payload, comparePayload);
-                            } else {
-                                updateCharts(payload, null);
-                                setStatus(`Loaded ${year}. No data found for compare year ${compareYear}.`);
-                            }
-                        })
-                        .catch(function () {
-                            updateCharts(payload, null);
-                            setStatus(`Loaded ${year}. Unable to load compare year ${compareYear}.`);
-                        });
+                    updateCharts(payload, null);
                 })
                 .catch(function () {
                     setStatus("Unable to load chart data.");
                 });
         }
 
+        function loadComparisonData(year, compareYear) {
+            if (compareRow) {
+                compareRow.hidden = true;
+            }
+            if (!year || !compareYear || compareYear === year) {
+                return;
+            }
+            fetchJson(`/api/edd-system-loss-year/${year}`)
+                .then(function (result) {
+                    const payload = result.payload || {};
+                    if (!result.ok || !payload || !payload.labels || payload.labels.length === 0) {
+                        setStatus(payload.error || `No data found for comparison year ${year}.`);
+                        return null;
+                    }
+                    return fetchJson(`/api/edd-system-loss-year/${compareYear}`)
+                        .then(function (compareResult) {
+                            const comparePayload = compareResult.payload || {};
+                            if (compareResult.ok && comparePayload && comparePayload.labels && comparePayload.labels.length) {
+                                updateCompareCharts(payload, comparePayload);
+                            } else {
+                                setStatus(`No data found for compare year ${compareYear}.`);
+                            }
+                        });
+                })
+                .catch(function () {
+                    setStatus("Unable to load comparison chart data.");
+                });
+        }
+
         function populateYears(years) {
             const previous = yearSelect.value || "";
+            const previousComparison = comparisonYearSelect.value || "";
             const previousCompare = compareYearSelect.value || "";
             yearSelect.innerHTML = "";
+            comparisonYearSelect.innerHTML = "";
             compareYearSelect.innerHTML = "";
 
             const noneOption = document.createElement("option");
@@ -4979,18 +5077,25 @@
                 option.textContent = "No uploads yet";
                 yearSelect.appendChild(option);
                 yearSelect.disabled = true;
+                comparisonYearSelect.disabled = true;
                 compareYearSelect.disabled = true;
                 setStatus("Upload a file to view this chart.");
                 return;
             }
 
             yearSelect.disabled = false;
+            comparisonYearSelect.disabled = false;
             compareYearSelect.disabled = false;
             years.forEach(function (year) {
                 const option = document.createElement("option");
                 option.value = String(year);
                 option.textContent = String(year);
                 yearSelect.appendChild(option);
+
+                const comparisonOption = document.createElement("option");
+                comparisonOption.value = String(year);
+                comparisonOption.textContent = String(year);
+                comparisonYearSelect.appendChild(comparisonOption);
 
                 const compareOption = document.createElement("option");
                 compareOption.value = String(year);
@@ -4999,11 +5104,17 @@
             });
 
             const available = Array.from(yearSelect.options).map(function (opt) { return opt.value; });
+            const availableComparison = Array.from(comparisonYearSelect.options).map(function (opt) { return opt.value; });
             const availableCompare = Array.from(compareYearSelect.options).map(function (opt) { return opt.value; });
             if (available.indexOf(previous) !== -1) {
                 yearSelect.value = previous;
             } else {
                 yearSelect.value = String(years[0]);
+            }
+            if (availableComparison.indexOf(previousComparison) !== -1) {
+                comparisonYearSelect.value = previousComparison;
+            } else {
+                comparisonYearSelect.value = yearSelect.value;
             }
             if (availableCompare.indexOf(previousCompare) !== -1) {
                 compareYearSelect.value = previousCompare;
@@ -5011,17 +5122,20 @@
                 compareYearSelect.value = "";
             }
 
-            loadData(yearSelect.value, compareYearSelect.value);
+            loadData(yearSelect.value);
+            loadComparisonData(comparisonYearSelect.value, compareYearSelect.value);
         }
 
         function loadYears() {
             yearSelect.innerHTML = "";
+            comparisonYearSelect.innerHTML = "";
             compareYearSelect.innerHTML = "";
             const loading = document.createElement("option");
             loading.value = "";
             loading.textContent = "Loading years...";
             yearSelect.appendChild(loading);
             yearSelect.disabled = true;
+            comparisonYearSelect.disabled = true;
             compareYearSelect.disabled = true;
 
             fetchJson("/api/edd-system-loss-years")
@@ -5029,12 +5143,14 @@
                     const payload = result.payload || {};
                     if (!result.ok) {
                         yearSelect.innerHTML = "";
+                        comparisonYearSelect.innerHTML = "";
                         compareYearSelect.innerHTML = "";
                         const option = document.createElement("option");
                         option.value = "";
                         option.textContent = "Unable to load years";
                         yearSelect.appendChild(option);
                         yearSelect.disabled = true;
+                        comparisonYearSelect.disabled = true;
                         const noneOption = document.createElement("option");
                         noneOption.value = "";
                         noneOption.textContent = "None";
@@ -5047,6 +5163,7 @@
                 })
                 .catch(function () {
                     yearSelect.innerHTML = "";
+                    comparisonYearSelect.innerHTML = "";
                     compareYearSelect.innerHTML = "";
                     const option = document.createElement("option");
                     option.value = "";
@@ -5063,11 +5180,15 @@
         }
 
         yearSelect.addEventListener("change", function () {
-            loadData(yearSelect.value, compareYearSelect.value);
+            loadData(yearSelect.value);
+        });
+
+        comparisonYearSelect.addEventListener("change", function () {
+            loadComparisonData(comparisonYearSelect.value, compareYearSelect.value);
         });
 
         compareYearSelect.addEventListener("change", function () {
-            loadData(yearSelect.value, compareYearSelect.value);
+            loadComparisonData(comparisonYearSelect.value, compareYearSelect.value);
         });
 
         window.refreshSystemLossYears = loadYears;
@@ -5141,6 +5262,57 @@
         };
     }
 
+    function parseDashboardYear(period) {
+        const text = String(period || "").trim();
+        const match = text.match(/\b(19|20)\d{2}\b/);
+        return match ? String(match[0]) : null;
+    }
+
+    function parseDashboardNumber(value) {
+        if (value === null || value === undefined || value === "") {
+            return null;
+        }
+        if (typeof value === "number") {
+            return Number.isFinite(value) ? value : null;
+        }
+        const cleaned = String(value).replace(/,/g, "").trim();
+        if (!cleaned) {
+            return null;
+        }
+        const num = Number(cleaned);
+        return Number.isFinite(num) ? num : null;
+    }
+
+    function extractMetricYears(rows) {
+        const months = [
+            "January", "February", "March", "April", "May", "June",
+            "July", "August", "September", "October", "November", "December"
+        ];
+        const years = [];
+        (rows || []).forEach(function (row) {
+            if (!row || !row.period) {
+                return;
+            }
+            const year = parseDashboardYear(row.period);
+            if (!year) {
+                return;
+            }
+            const data = row.data || {};
+            const hasValues = months.some(function (month) {
+                return parseDashboardNumber(data[month]) !== null;
+            });
+            if (!hasValues) {
+                return;
+            }
+            if (years.indexOf(year) === -1) {
+                years.push(year);
+            }
+        });
+        return years.sort(function (a, b) {
+            return Number(b) - Number(a);
+        });
+    }
+
     function updateLoadCurveChart(metricData) {
         const select = document.getElementById("annualKwYearSelect");
         const canvas = document.getElementById("annualKwChart");
@@ -5182,17 +5354,8 @@
             }
         });
 
-        // Populate year select with available years from data
-        const rows = metricData.data || [];
-        const years = [];
-        rows.forEach(function (row) {
-            if (row.period) {
-                const year = String(row.period).split(".")[0];
-                if (year && years.indexOf(year) === -1) {
-                    years.push(year);
-                }
-            }
-        });
+        // Populate year select with available years from rows that actually contain data.
+        const years = extractMetricYears(metricData.data || []);
 
         select.innerHTML = "";
         years.forEach(function (year) {
@@ -5242,16 +5405,7 @@
             }
         });
 
-        const rows = metricData.data || [];
-        const years = [];
-        rows.forEach(function (row) {
-            if (row.period) {
-                const year = String(row.period).split(".")[0];
-                if (year && years.indexOf(year) === -1) {
-                    years.push(year);
-                }
-            }
-        });
+        const years = extractMetricYears(metricData.data || []);
 
         select.innerHTML = "";
         years.forEach(function (year) {
@@ -5268,15 +5422,7 @@
         if (!yearSelect || !compareYearSelect) return;
 
         const rows = Array.isArray(systemLossKwhData && systemLossKwhData.data) ? systemLossKwhData.data : [];
-        const years = [];
-        rows.forEach(function (row) {
-            if (row && row.period) {
-                const year = String(row.period).split(".")[0];
-                if (year && years.indexOf(year) === -1) {
-                    years.push(year);
-                }
-            }
-        });
+        const years = extractMetricYears(rows);
 
         yearSelect.innerHTML = "";
         compareYearSelect.innerHTML = "";
@@ -5302,14 +5448,20 @@
 
     function getDashboardMetricYears(metrics, keys) {
         const years = [];
+        const rows = [];
         (keys || []).forEach(function (key) {
-            const rows = (metrics && metrics[key] && metrics[key].data) || [];
-            rows.forEach(function (row) {
-                const year = parseInt(String(row.period || "").match(/\d{4}/), 10);
-                if (year && years.indexOf(year) === -1) {
-                    years.push(year);
-                }
-            });
+            const metricRows = (metrics && metrics[key] && metrics[key].data) || [];
+            if (Array.isArray(metricRows)) {
+                metricRows.forEach(function (row) {
+                    rows.push(row);
+                });
+            }
+        });
+        extractMetricYears(rows).forEach(function (year) {
+            const numericYear = Number(year);
+            if (Number.isFinite(numericYear) && years.indexOf(numericYear) === -1) {
+                years.push(numericYear);
+            }
         });
         return years.sort(function (a, b) { return b - a; });
     }
@@ -5324,6 +5476,29 @@
     }
 
     function updateInterruptionCharts(saidiData, saifiData, maifiData) {
+        function toShortMonth(label) {
+            const text = String(label || "").trim();
+            if (!text) return text;
+            const map = {
+                january: "JAN",
+                february: "FEB",
+                march: "MAR",
+                april: "APR",
+                may: "MAY",
+                june: "JUN",
+                july: "JUL",
+                august: "AUG",
+                september: "SEP",
+                october: "OCT",
+                november: "NOV",
+                december: "DEC"
+            };
+            const lower = text.toLowerCase();
+            if (map[lower]) return map[lower];
+            if (lower.length >= 3) return lower.slice(0, 3).toUpperCase();
+            return text.toUpperCase();
+        }
+
         const interruptionMetrics = [
             { data: saidiData, id: "saidiChart", label: "SAIDI" },
             { data: saifiData, id: "saifiChart", label: "SAIFI" },
@@ -5344,7 +5519,7 @@
             canvas.chart = new window.Chart(ctx, {
                 type: "line",
                 data: {
-                    labels: monthlyData.labels,
+                    labels: monthlyData.labels.map(toShortMonth),
                     datasets: [{
                         label: metric.label,
                         data: monthlyData.values,
@@ -5369,10 +5544,81 @@
         });
     }
 
+    function updateInterruptionCompareCharts(selectedYear, compareYear, selectedMetrics, compareMetrics) {
+        const compareRow = document.getElementById("interruptionCompareCharts");
+        if (!compareRow || !window.Chart) return;
+        const hasCompare = !!(
+            compareYear &&
+            selectedMetrics &&
+            compareMetrics &&
+            selectedMetrics.saidi &&
+            selectedMetrics.saifi &&
+            selectedMetrics.maifi &&
+            compareMetrics.saidi &&
+            compareMetrics.saifi &&
+            compareMetrics.maifi
+        );
+        compareRow.hidden = !hasCompare;
+        if (!hasCompare) return;
+
+        function toShortMonth(label) {
+            const text = String(label || "").trim();
+            if (!text) return text;
+            return text.length >= 3 ? text.slice(0, 3).toUpperCase() : text.toUpperCase();
+        }
+
+        [
+            { key: "saidi", id: "saidiCompareChart", label: "SAIDI", first: "#ef4444", second: "#991b1b" },
+            { key: "saifi", id: "saifiCompareChart", label: "SAIFI", first: "#2563eb", second: "#1e40af" },
+            { key: "maifi", id: "maifiCompareChart", label: "MAIFI", first: "#f59e0b", second: "#b45309" }
+        ].forEach(function (metric) {
+            const canvas = document.getElementById(metric.id);
+            if (!canvas) return;
+            const selectedData = extractMonthlyValues(selectedMetrics[metric.key]);
+            const compareData = extractMonthlyValues(compareMetrics[metric.key]);
+            const ctx = canvas.getContext("2d");
+            if (!ctx) return;
+            if (canvas.chart) {
+                canvas.chart.destroy();
+            }
+            canvas.chart = new window.Chart(ctx, {
+                type: "bar",
+                data: {
+                    labels: selectedData.labels.map(toShortMonth),
+                    datasets: [
+                        {
+                            label: `${metric.label} ${selectedYear}`,
+                            data: selectedData.values,
+                            backgroundColor: metric.first,
+                            borderRadius: 2
+                        },
+                        {
+                            label: `${metric.label} ${compareYear}`,
+                            data: compareData.values,
+                            backgroundColor: metric.second,
+                            borderRadius: 2
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    layout: { padding: { top: 10, right: 12, bottom: 4, left: 6 } },
+                    plugins: { legend: { display: true } },
+                    scales: {
+                        x: { ticks: { autoSkip: true, maxTicksLimit: 12, padding: 6 } },
+                        y: { beginAtZero: true }
+                    }
+                }
+            });
+        });
+    }
+
     function initDashboardMetricsInterruptionCharts() {
         const yearSelect = document.getElementById("interruptionYearSelect");
+        const compareYearSelect = document.getElementById("interruptionCompareYearSelect");
         const status = document.getElementById("interruptionStatus");
-        if (!yearSelect || !window.Chart) return;
+        if (!yearSelect || !compareYearSelect || !window.Chart) return;
 
         function setStatus(message) {
             if (!status) return;
@@ -5380,49 +5626,94 @@
             status.classList.toggle("is-visible", !!message);
         }
 
-        function renderForYear(year) {
+        function buildMetricSet(metrics, year) {
+            return {
+                saidi: getDashboardMetricForYear(metrics.saidi, year),
+                saifi: getDashboardMetricForYear(metrics.saifi, year),
+                maifi: getDashboardMetricForYear(metrics.maifi, year)
+            };
+        }
+
+        function renderForYear(year, compareYear) {
             const metrics = window.dashboardMetricsPayload || {};
             if (!year || !metrics.saidi || !metrics.saifi || !metrics.maifi) {
+                updateInterruptionCompareCharts("", "", null, null);
                 setStatus("Upload Dashboard Metrics to view interruption charts.");
                 return;
             }
             setStatus("");
-            updateInterruptionCharts(
-                getDashboardMetricForYear(metrics.saidi, year),
-                getDashboardMetricForYear(metrics.saifi, year),
-                getDashboardMetricForYear(metrics.maifi, year)
-            );
+            const selectedMetrics = buildMetricSet(metrics, year);
+            updateInterruptionCharts(selectedMetrics.saidi, selectedMetrics.saifi, selectedMetrics.maifi);
+
+            if (compareYear && compareYear !== year) {
+                const compareMetrics = buildMetricSet(metrics, compareYear);
+                updateInterruptionCompareCharts(year, compareYear, selectedMetrics, compareMetrics);
+            } else {
+                updateInterruptionCompareCharts("", "", null, null);
+            }
         }
 
         function refresh() {
+            setStatus("Loading Dashboard Metrics...");
+            yearSelect.disabled = true;
+            compareYearSelect.disabled = true;
             loadDashboardMetricsData().then(function () {
                 const metrics = window.dashboardMetricsPayload || {};
                 const years = getDashboardMetricYears(metrics, ["saidi", "saifi", "maifi"]);
                 const previous = yearSelect.value || "";
+                const previousCompare = compareYearSelect.value || "";
                 yearSelect.innerHTML = "";
+                compareYearSelect.innerHTML = "";
+                const noneOption = document.createElement("option");
+                noneOption.value = "";
+                noneOption.textContent = "None";
+                compareYearSelect.appendChild(noneOption);
                 if (years.length === 0) {
                     const option = document.createElement("option");
                     option.value = "";
                     option.textContent = "No uploads yet";
                     yearSelect.appendChild(option);
                     yearSelect.disabled = true;
+                    compareYearSelect.disabled = true;
+                    updateInterruptionCompareCharts("", "", null, null);
                     setStatus("Upload Dashboard Metrics to view interruption charts.");
                     return;
                 }
                 yearSelect.disabled = false;
+                compareYearSelect.disabled = false;
                 years.forEach(function (year) {
                     const option = document.createElement("option");
                     option.value = String(year);
                     option.textContent = String(year);
                     yearSelect.appendChild(option);
+
+                    const compareOption = document.createElement("option");
+                    compareOption.value = String(year);
+                    compareOption.textContent = String(year);
+                    compareYearSelect.appendChild(compareOption);
                 });
                 yearSelect.value = years.map(String).indexOf(previous) !== -1 ? previous : String(years[0]);
-                renderForYear(yearSelect.value);
+                compareYearSelect.value = years.map(String).indexOf(previousCompare) !== -1 ? previousCompare : "";
+                renderForYear(yearSelect.value, compareYearSelect.value);
+            }).catch(function () {
+                yearSelect.innerHTML = "";
+                compareYearSelect.innerHTML = "";
+                const option = document.createElement("option");
+                option.value = "";
+                option.textContent = "Unable to load years";
+                yearSelect.appendChild(option);
+                yearSelect.disabled = true;
+                compareYearSelect.disabled = true;
+                setStatus("Unable to load Dashboard Metrics.");
             });
         }
 
         yearSelect.addEventListener("change", function () {
-            renderForYear(yearSelect.value);
+            renderForYear(yearSelect.value, compareYearSelect.value);
+        });
+
+        compareYearSelect.addEventListener("change", function () {
+            renderForYear(yearSelect.value, compareYearSelect.value);
         });
 
         window.refreshDashboardMetricsCharts = refresh;
