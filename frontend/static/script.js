@@ -2503,7 +2503,7 @@
         const cleaned = String(value || "").trim().toLowerCase();
         if (!cleaned) return "";
         if (cleaned === "hourly") return "hourly_kwh";
-        if (cleaned === "hourly_kwh" || cleaned === "hourly_kw" || cleaned === "edd" || cleaned === "energization" || cleaned === "dashboard_metrics" || cleaned === "other") {
+        if (cleaned === "hourly_kwh" || cleaned === "hourly_kw" || cleaned === "energy_demand" || cleaned === "edd" || cleaned === "energization" || cleaned === "dashboard_metrics" || cleaned === "other") {
             return cleaned;
         }
         return cleaned;
@@ -2519,6 +2519,9 @@
         }
         if (normalized.includes("dashboard") || normalized.includes("metrics")) {
             return "dashboard_metrics";
+        }
+        if (normalized.includes("energy") && normalized.includes("demand")) {
+            return "energy_demand";
         }
         if (/\bkwh\b/.test(normalized)) {
             return "hourly_kwh";
@@ -3000,7 +3003,7 @@
     function deleteUpload(uploadId) {
         if (!uploadId) return;
         setUploadError("");
-        fetchJson(`/delete/${uploadId}`, { method: "DELETE" }).then(function (result) {
+        fetchJson(`/delete/${uploadId}`, { method: "POST" }).then(function (result) {
             if (!result.ok) {
                 setUploadError(result.payload.error || "Unable to delete upload.");
                 return;
@@ -3023,6 +3026,9 @@
             }
             if (typeof window.refreshSalesYears === "function") {
                 window.refreshSalesYears();
+            }
+            if (typeof window.refreshPeakLoadYears === "function") {
+                window.refreshPeakLoadYears();
             }
             if (typeof window.refreshEnergizationMapData === "function") {
                 window.refreshEnergizationMapData();
@@ -3058,7 +3064,14 @@
             selectedFiles.forEach(function (file) {
                 dataTransfer.items.add(file);
             });
-            fileInput.files = dataTransfer.files;
+            try {
+                fileInput.files = dataTransfer.files;
+            } catch (err) {
+                fileInput.value = "";
+            }
+            if (selectedFiles.length === 0) {
+                fileInput.value = "";
+            }
         }
 
         function renderSelectedFiles() {
@@ -3186,6 +3199,9 @@
                 }
                 if (typeof window.refreshSalesYears === "function") {
                     window.refreshSalesYears();
+                }
+                if (typeof window.refreshPeakLoadYears === "function") {
+                    window.refreshPeakLoadYears();
                 }
                 if (typeof window.refreshEnergizationMapData === "function") {
                     window.refreshEnergizationMapData();
@@ -6264,11 +6280,11 @@
                 return;
             }
             setStatus("");
-            fetch(`/api/edd-peak-load-year/${year}`)
-                .then(function (response) { return response.json(); })
-                .then(function (payload) {
-                    if (payload && payload.error) {
-                        setStatus(payload.error);
+            fetchJson(`/api/edd-peak-load-year/${year}`)
+                .then(function (result) {
+                    const payload = result.payload || {};
+                    if (!result.ok) {
+                        setStatus(payload.error || "Unable to load chart data.");
                         return;
                     }
                     if (!payload || !payload.labels || payload.labels.length === 0) {
@@ -6282,11 +6298,73 @@
                 });
         }
 
+        function populateYears(years) {
+            const previous = select.value || "";
+            select.innerHTML = "";
+            if (!years || years.length === 0) {
+                const option = document.createElement("option");
+                option.value = "";
+                option.textContent = "No years available";
+                select.appendChild(option);
+                select.disabled = true;
+                loadData("");
+                return;
+            }
+
+            select.disabled = false;
+            years.forEach(function (year) {
+                const option = document.createElement("option");
+                option.value = String(year);
+                option.textContent = String(year);
+                select.appendChild(option);
+            });
+
+            const available = Array.from(select.options).map(function (option) { return option.value; });
+            select.value = available.indexOf(previous) !== -1 ? previous : String(years[0]);
+            loadData(select.value);
+        }
+
+        function loadYears() {
+            select.innerHTML = "";
+            const loading = document.createElement("option");
+            loading.value = "";
+            loading.textContent = "Loading years...";
+            select.appendChild(loading);
+            select.disabled = true;
+
+            fetchJson("/api/edd-peak-load-years")
+                .then(function (result) {
+                    const payload = result.payload || {};
+                    if (!result.ok) {
+                        select.innerHTML = "";
+                        const option = document.createElement("option");
+                        option.value = "";
+                        option.textContent = "Unable to load years";
+                        select.appendChild(option);
+                        select.disabled = true;
+                        setStatus(payload.error || "Unable to load years.");
+                        return;
+                    }
+                    setStatus("");
+                    populateYears(payload.years || []);
+                })
+                .catch(function () {
+                    select.innerHTML = "";
+                    const option = document.createElement("option");
+                    option.value = "";
+                    option.textContent = "Unable to load years";
+                    select.appendChild(option);
+                    select.disabled = true;
+                    setStatus("Unable to load years.");
+                });
+        }
+
         select.addEventListener("change", function () {
             loadData(select.value);
         });
 
-        loadData(select.value);
+        window.refreshPeakLoadYears = loadYears;
+        loadYears();
     }
 
     initPasswordToggles();

@@ -6,8 +6,10 @@ import uuid
 from datetime import datetime, time
 from functools import lru_cache
 from io import BytesIO
+from urllib.parse import quote
 
 import pandas as pd
+import requests
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify
 from typing import TYPE_CHECKING
 
@@ -118,6 +120,7 @@ CATEGORY_OPTIONS = {
     "hourly": "Hourly Loading (Legacy)",
     "hourly_kwh": "Hourly Loading (kWh)",
     "hourly_kw": "Hourly Loading (kW)",
+    "energy_demand": "Energy & Demand",
     "dashboard_metrics": "Dashboard Metrics",
     "other": "Other"
 }
@@ -236,6 +239,46 @@ def load_manifest(include_data=False):
         return []
 
 
+def is_uuid_value(value):
+    try:
+        uuid.UUID(str(value or ""))
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
+def supabase_uploads_rest(method, query, prefer=None, json_body=None):
+    headers = {
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+        "Accept": "application/json",
+    }
+    if prefer:
+        headers["Prefer"] = prefer
+    if json_body is not None:
+        headers["Content-Type"] = "application/json"
+    url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/uploads?{query}"
+    return requests.request(method, url, headers=headers, json=json_body, timeout=20)
+
+
+def read_rest_json(response):
+    if not response.text or not response.text.strip():
+        return []
+    try:
+        return response.json()
+    except ValueError:
+        return []
+
+
+def format_supabase_http_error(response, action):
+    detail = str(response.text or "").strip()
+    if len(detail) > 180:
+        detail = detail[:177] + "..."
+    if detail:
+        return f"Unable to {action} upload from database ({response.status_code}): {detail}"
+    return f"Unable to {action} upload from database ({response.status_code})."
+
+
 def fetch_upload(upload_id):
     if not supabase_enabled():
         # Fallback to local JSON manifests
@@ -249,8 +292,13 @@ def fetch_upload(upload_id):
         return None
 
     try:
-        response = get_supabase().table("uploads").select("*").eq("id", upload_id).limit(1).execute()
-        data = response.data if hasattr(response, "data") else response.get("data", [])
+        data = []
+        if is_uuid_value(upload_id):
+            response = get_supabase().table("uploads").select("*").eq("id", upload_id).limit(1).execute()
+            data = response.data if hasattr(response, "data") else response.get("data", [])
+        if not data:
+            response = get_supabase().table("uploads").select("*").eq("stored_name", upload_id).limit(1).execute()
+            data = response.data if hasattr(response, "data") else response.get("data", [])
         if data and len(data) > 0:
             entry = data[0]
             # If data_json is not in Supabase entry, try to load from local JSON file
@@ -275,22 +323,85 @@ def fetch_upload(upload_id):
 def insert_upload(entry):
     if not supabase_enabled():
         return entry
-    response = get_supabase().table("uploads").insert(entry).execute()
-    data = response.data if hasattr(response, "data") else response.get("data", [])
-    return data[0] if data else None
+    try:
+        response = supabase_uploads_rest(
+            "POST",
+            "",
+            prefer="return=representation",
+            json_body=entry,
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError(f"Unable to save upload to database: {exc}") from exc
+    if response.status_code < 200 or response.status_code >= 300:
+        raise RuntimeError(format_supabase_http_error(response, "save"))
+    data = read_rest_json(response)
+    return data[0] if isinstance(data, list) and data else entry
+
+
+def delete_local_upload_json(stored_name):
+    json_path = get_upload_json_path(stored_name)
+    if not json_path or not os.path.isfile(json_path):
+        return
+    try:
+        os.remove(json_path)
+    except OSError:
+        pass
+
+
+def delete_local_upload_file(stored_name):
+    if not stored_name:
+        return
+    path = os.path.join(UPLOADS_DIR, stored_name)
+    if not os.path.isfile(path):
+        return
+    try:
+        os.remove(path)
+    except OSError:
+        pass
 
 
 def delete_upload_entry(upload_id):
     entry = fetch_upload(upload_id)
+    if not entry:
+        return False, "File not found."
+
     if supabase_enabled():
-        get_supabase().table("uploads").delete().eq("id", upload_id).execute()
+        database_id = entry.get("id") or upload_id
+        filter_column = "id" if is_uuid_value(database_id) else "stored_name"
+        filter_value = database_id if filter_column == "id" else entry.get("stored_name") or upload_id
+        encoded_value = quote(str(filter_value), safe="")
+        try:
+            response = supabase_uploads_rest(
+                "DELETE",
+                f"{filter_column}=eq.{encoded_value}",
+                prefer="return=representation",
+            )
+            if response.status_code < 200 or response.status_code >= 300:
+                return False, format_supabase_http_error(response, "delete")
+
+            response = supabase_uploads_rest(
+                "GET",
+                f"select=id&{filter_column}=eq.{encoded_value}&limit=1",
+            )
+            if response.status_code < 200 or response.status_code >= 300:
+                return False, format_supabase_http_error(response, "verify deleted")
+            data = read_rest_json(response)
+            if data:
+                return False, "Unable to delete upload from database."
+        except requests.RequestException as exc:
+            return False, f"Unable to delete upload from database: {exc}"
+
     if entry and entry.get("stored_name"):
         json_path = get_upload_json_path(entry.get("stored_name"))
         try:
             if json_path and os.path.isfile(json_path):
                 os.remove(json_path)
         except OSError:
-            pass
+            if not supabase_enabled():
+                return False, "Unable to delete upload file."
+        delete_local_upload_file(entry.get("stored_name"))
+
+    return True, ""
 
 
 def get_current_user():
@@ -432,6 +543,19 @@ def write_upload_json(stored_name, data_json):
             json.dump(data_json or {}, handle, ensure_ascii=True, separators=(",", ":"))
     except OSError:
         return None, "Unable to save the JSON file."
+    return path, None
+
+
+def write_upload_file(stored_name, file_bytes):
+    if not stored_name:
+        return None, "Missing stored filename for upload export."
+    os.makedirs(UPLOADS_DIR, exist_ok=True)
+    path = os.path.join(UPLOADS_DIR, stored_name)
+    try:
+        with open(path, "wb") as handle:
+            handle.write(file_bytes or b"")
+    except OSError:
+        return None, "Unable to save the upload file."
     return path, None
 
 
@@ -663,6 +787,8 @@ def infer_category_from_name(name):
         return "hourly_kwh"
     if re.search(r"\bkw\b", normalized):
         return "hourly_kw"
+    if "energy" in normalized and "demand" in normalized:
+        return "energy_demand"
     if "energy" in normalized or re.search(r"\bcp\b", normalized):
         return "hourly_kwh"
     if "hourly" in normalized:
@@ -679,22 +805,30 @@ def get_entry_category(entry):
 
 def is_hourly_kwh_entry(entry):
     category = (entry.get("category") or "").strip().lower()
-    if category in ("hourly_kwh", "hourly"):
+    if category in ("hourly_kwh", "hourly", "energy_demand"):
         return True
     if category == "hourly_kw":
         return False
+    if category == "dashboard_metrics":
+        hourly = get_entry_data(entry).get("hourly") or {}
+        cp_payload = hourly.get("cp") or {}
+        return bool(cp_payload.get("days") or cp_payload.get("month_avg"))
     inferred = infer_category_from_name(entry.get("original_name", ""))
-    return inferred in ("hourly_kwh", "hourly")
+    return inferred in ("hourly_kwh", "hourly", "energy_demand")
 
 
 def is_hourly_kw_entry(entry):
     category = (entry.get("category") or "").strip().lower()
-    if category in ("hourly_kw", "hourly"):
+    if category in ("hourly_kw", "hourly", "energy_demand"):
         return True
     if category == "hourly_kwh":
         return False
+    if category == "dashboard_metrics":
+        hourly = get_entry_data(entry).get("hourly") or {}
+        kw_payload = hourly.get("kw") or {}
+        return bool(kw_payload.get("days") or kw_payload.get("month_max"))
     inferred = infer_category_from_name(entry.get("original_name", ""))
-    return inferred in ("hourly_kw",)
+    return inferred in ("hourly_kw", "energy_demand")
 
 
 def entry_matches_category(entry, category):
@@ -705,6 +839,8 @@ def entry_matches_category(entry, category):
         return is_hourly_kwh_entry(entry)
     if normalized == "hourly_kw":
         return is_hourly_kw_entry(entry)
+    if normalized == "energy_demand":
+        return get_entry_category(entry) == "energy_demand"
     return get_entry_category(entry) == normalized
 
 
@@ -799,8 +935,7 @@ def build_days_from_hour_map(day_hour_map):
     for day, hour_map in day_hour_map.items():
         series = []
         for hour in range(24):
-            source_hour = (hour + 1) % 24
-            value = hour_map.get(source_hour, 0)
+            value = hour_map.get(hour, 0)
             try:
                 series.append(float(value))
             except (TypeError, ValueError):
@@ -923,6 +1058,102 @@ def filter_days_map(days_map, start_date=None, end_date=None):
     return filtered
 
 
+def build_hourly_month_items_from_periods(entry, periods):
+    items = []
+    if not isinstance(periods, dict):
+        return items
+    for period in periods.values():
+        if not isinstance(period, dict):
+            continue
+        start_date = parse_iso_date(period.get("start"))
+        end_date = parse_iso_date(period.get("end"))
+        year = period.get("year")
+        month = period.get("month")
+        try:
+            year = int(year)
+            month = int(month)
+        except (TypeError, ValueError):
+            continue
+        if not start_date or not end_date or month < 1 or month > 12:
+            continue
+        items.append({
+            "id": entry.get("id"),
+            "year": year,
+            "month": month,
+            "start": format_date_ymd(start_date),
+            "end": format_date_ymd(end_date),
+            "label": period.get("label") or format_billing_label(start_date, end_date)
+        })
+    return items
+
+
+def billing_period_bounds(year, month):
+    try:
+        year = int(year)
+        month = int(month)
+    except (TypeError, ValueError):
+        return None, None
+    if month < 1 or month > 12:
+        return None, None
+    if month == 1:
+        start_year = year - 1
+        start_month = 12
+    else:
+        start_year = year
+        start_month = month - 1
+    return datetime(start_year, start_month, 26).date(), datetime(year, month, 25).date()
+
+
+def infer_hourly_period_years(entry, hourly_payload, periods):
+    years = set()
+    if isinstance(periods, dict):
+        for period in periods.values():
+            if not isinstance(period, dict):
+                continue
+            try:
+                year = int(period.get("year"))
+            except (TypeError, ValueError):
+                continue
+            if 1900 <= year <= 2099:
+                years.add(year)
+
+    source_year = extract_year_from_text((hourly_payload or {}).get("source_sheet"))
+    if source_year:
+        years.add(source_year)
+
+    entry_year = entry.get("year")
+    try:
+        entry_year = int(entry_year)
+    except (TypeError, ValueError):
+        entry_year = None
+    if entry_year:
+        years.add(entry_year)
+
+    return sorted(years)
+
+
+def build_full_hourly_month_items(entry, hourly_payload, periods):
+    years = infer_hourly_period_years(entry, hourly_payload, periods)
+    if not years:
+        return build_hourly_month_items_from_periods(entry, periods)
+
+    items = []
+    for year in years:
+        for month in range(1, 13):
+            start_date, end_date = billing_period_bounds(year, month)
+            if not start_date or not end_date:
+                continue
+            items.append({
+                "id": entry.get("id"),
+                "year": year,
+                "month": month,
+                "start": format_date_ymd(start_date),
+                "end": format_date_ymd(end_date),
+                "label": format_billing_label(start_date, end_date)
+            })
+    return items
+
+
 def compute_cp_day_hour_sums(xl):
     sheet = find_cp_sheet(xl.sheet_names)
     if not sheet:
@@ -993,6 +1224,27 @@ def find_pivot_header_row(df):
         row = df.iloc[i]
         if any(isinstance(x, str) and "row labels" in x.lower() for x in row.tolist() if pd.notna(x)):
             return i
+
+    # Fallback: support pivot tables where the first header row uses a time label or blank first cell
+    for i in range(len(df)):
+        row = df.iloc[i]
+        values = row.tolist()
+        if len(values) < 3:
+            continue
+        date_columns = 0
+        for val in values[1:]:
+            if val is None or (isinstance(val, float) and pd.isna(val)):
+                continue
+            try:
+                parsed = pd.to_datetime(val, errors="coerce")
+            except Exception:
+                parsed = None
+            if parsed is not None and pd.notna(parsed):
+                date_columns += 1
+        if date_columns >= 3:
+            first_text = str(values[0] or "").strip().lower()
+            if first_text in ("", "time", "date", "row labels", "time interval"):
+                return i
     return None
 
 
@@ -1618,14 +1870,581 @@ def extract_dashboard_metrics_from_xl(xl):
         if not metrics:
             return None, "No recognized sheets found in the Excel file."
 
-        return {
+        payload = {
             "dashboard_metrics": metrics,
             "sheets_processed": len(metrics),
             "available_metrics": list(metrics.keys())
-        }, None
+        }
+        return payload, None
 
     except Exception as e:
         return None, f"Error reading Excel file: {str(e)}"
+
+
+def normalize_sheet_lookup_text(value):
+    return re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
+
+
+def find_energy_sheet(sheet_names):
+    """Find a sheet containing Energy or kWh data."""
+    if not isinstance(sheet_names, list):
+        return None
+    for name in sheet_names:
+        normalized = normalize_sheet_lookup_text(name)
+        if "energy" in normalized or "kwh" in normalized:
+            return name
+    return None
+
+
+def is_year_sheet_name(value):
+    year = extract_year_from_text(value)
+    return year is not None and str(value or "").strip() == str(year)
+
+
+def find_yearly_hourly_sheet(xl):
+    sheets = find_yearly_hourly_sheets(xl)
+    return sheets[0] if sheets else None
+
+
+def find_yearly_hourly_sheets(xl):
+    if not isinstance(getattr(xl, "sheet_names", None), list):
+        return []
+
+    year_sheets = [name for name in xl.sheet_names if is_year_sheet_name(name)]
+    candidates = year_sheets or list(xl.sheet_names)
+    sheets = []
+    for sheet in candidates:
+        try:
+            preview = xl.parse(sheet, header=None, nrows=8)
+        except Exception:
+            continue
+        for i in range(len(preview)):
+            date_columns = collect_demand_energy_date_columns(preview.iloc[i].tolist())
+            if len(date_columns) >= 7:
+                sheets.append(sheet)
+                break
+    return sheets
+
+
+def extract_yearly_energy_hourly_from_xl(xl):
+    sheets = find_yearly_hourly_sheets(xl)
+    if not sheets:
+        return None, "Yearly Energy sheet not found."
+
+    day_hour_sum = {}
+    used_sheets = []
+    for sheet in sheets:
+        try:
+            df = xl.parse(sheet, header=None)
+        except Exception:
+            continue
+
+        header_idx = None
+        date_columns = []
+        for i in range(len(df)):
+            row_date_columns = collect_demand_energy_date_columns(df.iloc[i].tolist())
+            if len(row_date_columns) >= 7:
+                header_idx = i
+                date_columns = row_date_columns
+                break
+
+        if header_idx is None or not date_columns:
+            continue
+
+        sheet_has_values = False
+        for _, row in df.iloc[header_idx + 1:].iterrows():
+            row_values = row.tolist()
+            if not row_values:
+                continue
+            hour, minute = parse_demand_energy_time_components(row_values[0])
+            if hour is None or minute is None:
+                continue
+            bucket = bucket_end_hour(hour, minute)
+            if bucket is None:
+                continue
+            for col_idx, sample_day in date_columns:
+                if col_idx >= len(row_values):
+                    continue
+                numeric_value = parse_numeric_cell(row_values[col_idx])
+                if numeric_value is None:
+                    continue
+                day_map = day_hour_sum.setdefault(sample_day, {})
+                day_map[bucket] = day_map.get(bucket, 0.0) + float(numeric_value)
+                sheet_has_values = True
+        if sheet_has_values:
+            used_sheets.append(sheet)
+
+    days = build_days_from_hour_map(day_hour_sum)
+    if not days:
+        return None, "No usable yearly Energy hourly data found."
+
+    period_dates = {}
+    for day in sorted(day_hour_sum.keys()):
+        period_key = make_billing_period_key(day)
+        if period_key:
+            period_dates.setdefault(period_key, set()).add(day)
+
+    return {
+        "days": days,
+        "periods": build_demand_energy_periods(period_dates),
+        "month_max": compute_hourly_max(days),
+        "month_avg": compute_hourly_avg(days),
+        "source_sheets": used_sheets
+    }, None
+
+
+def find_demand_sheet(sheet_names):
+    """Find a sheet containing Demand or kW data."""
+    if not isinstance(sheet_names, list):
+        return None
+    for name in sheet_names:
+        normalized = normalize_sheet_lookup_text(name)
+        if "demand" in normalized or ("kw" in normalized and "kwh" not in normalized):
+            return name
+    return None
+
+
+def find_demand_energy_sheet(sheet_names):
+    if not isinstance(sheet_names, list):
+        return None
+
+    # Prefer a sheet that explicitly references both demand and energy.
+    for name in sheet_names:
+        normalized = normalize_sheet_lookup_text(name)
+        if "demand" in normalized and "energy" in normalized:
+            return name
+
+    # Otherwise allow a sheet that contains either energy or demand.
+    for name in sheet_names:
+        normalized = normalize_sheet_lookup_text(name)
+        if "energy" in normalized or "demand" in normalized:
+            return name
+
+    return None
+
+
+def extract_year_from_text(value):
+    if isinstance(value, (pd.Timestamp, datetime)):
+        return None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if math.isfinite(float(value)) and float(value).is_integer():
+            year = int(value)
+            return year if 1900 <= year <= 2099 else None
+    text = str(value or "").strip()
+    if re.fullmatch(r"\d{1,2}:\d{2}(?::\d{2})?", text):
+        return None
+    if re.fullmatch(r"\d{1,2}\s*[/-]\s*\d{1,2}\s*[/-]\s*(19\d{2}|20\d{2})", text):
+        return None
+    if re.fullmatch(r"(19\d{2}|20\d{2})\s*[/-]\s*\d{1,2}\s*[/-]\s*\d{1,2}.*", text):
+        return None
+    match = re.fullmatch(r".*\b(19\d{2}|20\d{2})\b.*", text)
+    return int(match.group(1)) if match else None
+
+
+def extract_month_from_text(value):
+    text = normalize_sheet_lookup_text(value)
+    if not text:
+        return None
+    for alias, month_num in MONTH_ALIASES:
+        if re.search(rf"\b{re.escape(alias)}\b", text):
+            return month_num
+    return None
+
+
+def extract_demand_energy_metric_text(value):
+    text = normalize_sheet_lookup_text(value)
+    if not text:
+        return None
+    if re.fullmatch(r"k\s*w\s*h", text) or text in ("kwh", "kwhr", "energy"):
+        return "kwh"
+    if re.fullmatch(r"k\s*w", text) or text in ("kw", "demand"):
+        return "kw"
+    return None
+
+
+def read_next_numeric_in_row(row_values, start_index):
+    for idx in range(start_index + 1, len(row_values)):
+        hour, minute = parse_demand_energy_time_components(row_values[idx])
+        if hour is not None and minute is not None:
+            return None
+        value = parse_numeric_cell(row_values[idx])
+        if value is not None:
+            return float(value)
+    return None
+
+
+def parse_demand_energy_time_components(value):
+    if isinstance(value, (pd.Timestamp, datetime)):
+        return None, None
+    if isinstance(value, time):
+        return value.hour, value.minute
+    if hasattr(value, "hour") and hasattr(value, "minute") and not hasattr(value, "date"):
+        try:
+            return int(value.hour), int(value.minute)
+        except Exception:
+            pass
+    if isinstance(value, str):
+        text = value.strip()
+        if re.fullmatch(r"\d{1,2}:\d{2}(?::\d{2})?", text):
+            return parse_time_components(text)
+        return None, None
+    try:
+        num = float(value)
+        if math.isfinite(num) and 0 <= num < 1:
+            return parse_time_components(num)
+    except (TypeError, ValueError):
+        pass
+    return None, None
+
+
+def parse_demand_energy_date_cell(value):
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return None
+    if isinstance(value, pd.Timestamp):
+        return value.date()
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, time):
+        return None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return None
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if re.fullmatch(r"\d{1,2}:\d{2}(?::\d{2})?", text):
+        return None
+    if not re.search(r"\d", text):
+        return None
+    parsed = pd.to_datetime(text, errors="coerce")
+    if pd.isna(parsed):
+        return None
+    if parsed.year < 1990 or parsed.year > 2100:
+        return None
+    return parsed.date()
+
+
+def collect_demand_energy_date_columns(row_values):
+    columns = []
+    for idx, value in enumerate(row_values):
+        parsed = parse_demand_energy_date_cell(value)
+        if parsed:
+            columns.append((idx, parsed))
+    return columns
+
+
+def make_period_key(year, month):
+    if not year or not month:
+        return None
+    try:
+        year = int(year)
+        month = int(month)
+    except (TypeError, ValueError):
+        return None
+    if month < 1 or month > 12:
+        return None
+    return f"{year:04d}-{month:02d}"
+
+
+def make_billing_period_key(day):
+    if not day:
+        return None
+    year = day.year
+    month = day.month
+    if day.day >= 26:
+        if month == 12:
+            year += 1
+            month = 1
+        else:
+            month += 1
+    return make_period_key(year, month)
+
+
+def build_demand_energy_periods(period_dates):
+    periods = {}
+    for period_key, dates in (period_dates or {}).items():
+        valid_dates = sorted(day for day in dates if day)
+        if not valid_dates:
+            continue
+        try:
+            year_text, month_text = str(period_key).split("-", 1)
+            year = int(year_text)
+            month = int(month_text)
+        except (TypeError, ValueError):
+            continue
+        if month < 1 or month > 12:
+            continue
+        periods[period_key] = {
+            "year": year,
+            "month": month,
+            "start": format_date_ymd(valid_dates[0]),
+            "end": format_date_ymd(valid_dates[-1]),
+            "dates": [format_date_ymd(day) for day in valid_dates],
+            "label": f"{MONTH_NAMES[month - 1]} ({format_date_mdy(valid_dates[0])} - {format_date_mdy(valid_dates[-1])})"
+        }
+    return periods
+
+
+def add_demand_energy_value(metric_maps, metric, sample_day, hour, minute, value):
+    if not metric or sample_day is None or value is None:
+        return
+    bucket = bucket_end_hour(hour, minute) if metric == "kwh" else bucket_end_hour_kw(hour, minute)
+    if bucket is None:
+        return
+    day_map = metric_maps[metric].setdefault(sample_day, {})
+    if metric == "kwh":
+        day_map[bucket] = day_map.get(bucket, 0.0) + float(value)
+        return
+    current = day_map.get(bucket)
+    if current is None or float(value) > current:
+        day_map[bucket] = float(value)
+
+
+def extract_energy_hourly_from_xl(xl):
+    """Extract kWh/Energy data from the Energy sheet."""
+    sheet = find_energy_sheet(xl.sheet_names)
+    if not sheet:
+        return None, "Energy sheet not found."
+    
+    try:
+        df = xl.parse(sheet, header=None)
+    except Exception:
+        return None, "Unable to read Energy sheet."
+    
+    sheet_year = extract_year_from_text(sheet)
+    current_year = sheet_year
+    current_month = None
+    current_metric = "kwh"
+    current_date_columns = []
+    metric_maps = {"kwh": {}}
+    metric_period_dates = {"kwh": {}}
+    
+    for _, row in df.iterrows():
+        row_values = row.tolist()
+        row_has_time = any(
+            parse_demand_energy_time_components(value) != (None, None)
+            for value in row_values
+        )
+        if not row_has_time:
+            row_years = [extract_year_from_text(value) for value in row_values if pd.notna(value)]
+            row_years = [value for value in row_years if value]
+            row_months = [extract_month_from_text(value) for value in row_values if pd.notna(value)]
+            row_months = [value for value in row_months if value]
+            row_date_columns = collect_demand_energy_date_columns(row_values)
+            
+            if row_years:
+                current_year = row_years[0]
+            if row_months:
+                current_month = row_months[0]
+            if row_date_columns:
+                current_date_columns = row_date_columns
+                period_key = make_period_key(current_year, current_month)
+                if period_key:
+                    period_days = [sample_day for _, sample_day in row_date_columns]
+                    metric_period_dates["kwh"].setdefault(period_key, set()).update(period_days)
+        
+        if not current_year or not current_month or not current_date_columns:
+            continue
+        
+        period_key = make_period_key(current_year, current_month)
+        for idx, raw_value in enumerate(row_values):
+            hour, minute = parse_demand_energy_time_components(raw_value)
+            if hour is None or minute is None:
+                continue
+            for col_idx, sample_day in current_date_columns:
+                if col_idx >= len(row_values):
+                    continue
+                numeric_value = parse_numeric_cell(row_values[col_idx])
+                if numeric_value is None:
+                    continue
+                add_demand_energy_value(metric_maps, "kwh", sample_day, hour, minute, numeric_value)
+                if period_key:
+                    metric_period_dates["kwh"].setdefault(period_key, set()).add(sample_day)
+    
+    kwh_days = build_days_from_hour_map(metric_maps["kwh"])
+    kwh_periods = build_demand_energy_periods(metric_period_dates["kwh"])
+    
+    if not kwh_days:
+        return None, "No usable Energy hourly data found."
+    
+    return {
+        "days": kwh_days,
+        "periods": kwh_periods,
+        "month_max": compute_hourly_max(kwh_days),
+        "month_avg": compute_hourly_avg(kwh_days)
+    }, None
+
+
+def extract_demand_hourly_from_xl(xl):
+    """Extract kW/Demand data from the Demand sheet."""
+    sheet = find_demand_sheet(xl.sheet_names)
+    if not sheet:
+        return None, "Demand sheet not found."
+    
+    try:
+        df = xl.parse(sheet, header=None)
+    except Exception:
+        return None, "Unable to read Demand sheet."
+    
+    sheet_year = extract_year_from_text(sheet)
+    current_year = sheet_year
+    current_month = None
+    current_metric = "kw"
+    current_date_columns = []
+    metric_maps = {"kw": {}}
+    metric_period_dates = {"kw": {}}
+    
+    for _, row in df.iterrows():
+        row_values = row.tolist()
+        row_has_time = any(
+            parse_demand_energy_time_components(value) != (None, None)
+            for value in row_values
+        )
+        if not row_has_time:
+            row_years = [extract_year_from_text(value) for value in row_values if pd.notna(value)]
+            row_years = [value for value in row_years if value]
+            row_months = [extract_month_from_text(value) for value in row_values if pd.notna(value)]
+            row_months = [value for value in row_months if value]
+            row_date_columns = collect_demand_energy_date_columns(row_values)
+            
+            if row_years:
+                current_year = row_years[0]
+            if row_months:
+                current_month = row_months[0]
+            if row_date_columns:
+                current_date_columns = row_date_columns
+                period_key = make_period_key(current_year, current_month)
+                if period_key:
+                    period_days = [sample_day for _, sample_day in row_date_columns]
+                    metric_period_dates["kw"].setdefault(period_key, set()).update(period_days)
+        
+        if not current_year or not current_month or not current_date_columns:
+            continue
+        
+        period_key = make_period_key(current_year, current_month)
+        for idx, raw_value in enumerate(row_values):
+            hour, minute = parse_demand_energy_time_components(raw_value)
+            if hour is None or minute is None:
+                continue
+            for col_idx, sample_day in current_date_columns:
+                if col_idx >= len(row_values):
+                    continue
+                numeric_value = parse_numeric_cell(row_values[col_idx])
+                if numeric_value is None:
+                    continue
+                add_demand_energy_value(metric_maps, "kw", sample_day, hour, minute, numeric_value)
+                if period_key:
+                    metric_period_dates["kw"].setdefault(period_key, set()).add(sample_day)
+    
+    kw_days = build_days_from_hour_map(metric_maps["kw"])
+    kw_periods = build_demand_energy_periods(metric_period_dates["kw"])
+    
+    if not kw_days:
+        return None, "No usable Demand hourly data found."
+    
+    return {
+        "days": kw_days,
+        "periods": kw_periods,
+        "month_max": compute_hourly_max(kw_days)
+    }, None
+
+
+def extract_demand_energy_hourly_from_xl(xl):
+    sheet = find_demand_energy_sheet(xl.sheet_names)
+    if not sheet:
+        return None, "Demand and Energy sheet not found."
+
+    try:
+        df = xl.parse(sheet, header=None)
+    except Exception:
+        return None, "Unable to read Demand and Energy sheet."
+
+    sheet_year = extract_year_from_text(sheet)
+    current_year = sheet_year
+    current_month = None
+    current_metric = None
+    current_date_columns = []
+    metric_maps = {"kw": {}, "kwh": {}}
+    metric_period_dates = {"kw": {}, "kwh": {}}
+
+    for _, row in df.iterrows():
+        row_values = row.tolist()
+        row_has_time = any(
+            parse_demand_energy_time_components(value) != (None, None)
+            for value in row_values
+        )
+        if not row_has_time:
+            row_years = [extract_year_from_text(value) for value in row_values if pd.notna(value)]
+            row_years = [value for value in row_years if value]
+            row_months = [extract_month_from_text(value) for value in row_values if pd.notna(value)]
+            row_months = [value for value in row_months if value]
+            row_metrics = [extract_demand_energy_metric_text(value) for value in row_values if pd.notna(value)]
+            row_metrics = [value for value in row_metrics if value]
+            row_date_columns = collect_demand_energy_date_columns(row_values)
+
+            if row_years:
+                current_year = row_years[0]
+            if row_months:
+                current_month = row_months[0]
+            if row_metrics:
+                current_metric = row_metrics[0]
+                if row_date_columns:
+                    current_date_columns = row_date_columns
+                    period_key = make_period_key(current_year, current_month)
+                    if period_key:
+                        period_days = [sample_day for _, sample_day in row_date_columns]
+                        metric_period_dates[current_metric].setdefault(period_key, set()).update(period_days)
+            elif row_date_columns and current_metric:
+                current_date_columns = row_date_columns
+                period_key = make_period_key(current_year, current_month)
+                if period_key:
+                    period_days = [sample_day for _, sample_day in row_date_columns]
+                    metric_period_dates[current_metric].setdefault(period_key, set()).update(period_days)
+            elif row_months:
+                current_metric = None
+                current_date_columns = []
+
+        if not current_year or not current_month or not current_metric or not current_date_columns:
+            continue
+
+        period_key = make_period_key(current_year, current_month)
+        for idx, raw_value in enumerate(row_values):
+            hour, minute = parse_demand_energy_time_components(raw_value)
+            if hour is None or minute is None:
+                continue
+            for col_idx, sample_day in current_date_columns:
+                if col_idx >= len(row_values):
+                    continue
+                numeric_value = parse_numeric_cell(row_values[col_idx])
+                if numeric_value is None:
+                    continue
+                add_demand_energy_value(metric_maps, current_metric, sample_day, hour, minute, numeric_value)
+                if period_key:
+                    metric_period_dates[current_metric].setdefault(period_key, set()).add(sample_day)
+
+    kw_days = build_days_from_hour_map(metric_maps["kw"])
+    kwh_days = build_days_from_hour_map(metric_maps["kwh"])
+    kw_periods = build_demand_energy_periods(metric_period_dates["kw"])
+    kwh_periods = build_demand_energy_periods(metric_period_dates["kwh"])
+
+    if not kw_days and not kwh_days:
+        return None, "No usable Demand and Energy hourly data found."
+
+    return {
+        "labels": build_hour_labels(),
+        "cp": {
+            "days": kwh_days,
+            "periods": kwh_periods,
+            "month_max": compute_hourly_max(kwh_days),
+            "month_avg": compute_hourly_avg(kwh_days)
+        } if kwh_days else {},
+        "kw": {
+            "days": kw_days,
+            "periods": kw_periods,
+            "month_max": compute_hourly_max(kw_days),
+            "month_avg": compute_hourly_avg(kw_days)
+        } if kw_days else {},
+        "source_sheet": sheet
+    }, None
 
 
 def parse_dashboard_metric_year(period):
@@ -1745,6 +2564,43 @@ def precompute_upload_data(file_bytes, filename, category):
                 "labels": labels,
                 "cp": {},
                 "kw": kw_payload
+            }
+        }, None
+    if category == "energy_demand":
+        labels = build_hour_labels()
+        energy_payload, energy_error = extract_energy_hourly_from_xl(xl)
+        if energy_error:
+            yearly_energy_payload, yearly_energy_error = extract_yearly_energy_hourly_from_xl(xl)
+            if yearly_energy_payload:
+                energy_payload = yearly_energy_payload
+                energy_error = None
+            else:
+                energy_error = yearly_energy_error or energy_error
+        demand_payload, demand_error = extract_demand_hourly_from_xl(xl)
+        
+        if energy_error and demand_error:
+            return None, f"Energy: {energy_error} | Demand: {demand_error}"
+        
+        cp_payload = energy_payload if energy_payload else {}
+        kw_payload = demand_payload if demand_payload else {}
+        
+        if not energy_payload and not demand_payload:
+            return None, "No usable Energy or Demand data found."
+        
+        return {
+            "hourly": {
+                "labels": labels,
+                "cp": cp_payload,
+                "kw": kw_payload,
+                "source_sheet": (
+                    find_energy_sheet(xl.sheet_names)
+                    or next(iter((cp_payload or {}).get("source_sheets") or []), None)
+                    or find_yearly_hourly_sheet(xl)
+                ),
+                "source_sheets": {
+                    "energy": find_energy_sheet(xl.sheet_names) or (cp_payload or {}).get("source_sheets") or find_yearly_hourly_sheet(xl),
+                    "demand": find_demand_sheet(xl.sheet_names)
+                }
             }
         }, None
 
@@ -2320,21 +3176,17 @@ def parse_time_components(value):
 def bucket_end_hour(hour, minute):
     if hour is None or minute is None:
         return None
-    if minute == 0:
-        return hour
-    return (hour + 1) % 24
+    return hour
 
 
 def bucket_end_hour_kw(hour, minute):
     if hour is None or minute is None:
         return None
-    if minute < 5:
-        return hour
-    return (hour + 1) % 24
+    return hour
 
 
 def format_hour_label(hour):
-    return f"{hour + 1}:00"
+    return f"{hour:02d}:00"
 
 
 def extract_cp_hourly_data(file_path, target_year=None, target_month=None):
@@ -3022,6 +3874,22 @@ def build_sales_year_options(entries):
     return sorted(years, reverse=True)
 
 
+def build_peak_load_year_options(entries):
+    years = set(get_dashboard_metric_years(entries, ["load_curve"]))
+    for entry in entries:
+        category = get_entry_category(entry)
+        if category != "edd" and not is_hourly_kw_entry(entry):
+            continue
+        entry_year = entry.get("year")
+        if not entry_year:
+            parsed_year, _ = parse_year_month(entry.get("original_name", ""))
+            entry_year = parsed_year
+        if entry_year:
+            years.add(int(entry_year))
+
+    return sorted(years, reverse=True)
+
+
 def build_system_loss_year_payload(entries, year):
     dashboard_values = get_dashboard_metric_values(get_dashboard_metric(entries, "system_loss_kwh"), year)
     dashboard_percents = get_dashboard_metric_values(get_dashboard_metric(entries, "system_loss_percent"), year, percent=True)
@@ -3351,10 +4219,14 @@ def upload_file():
         selected_category = "other"
 
     added = 0
+    seen_names = set()
     for file in files:
         if not file or not file.filename:
             continue
         original_name = file.filename.strip()
+        if original_name in seen_names:
+            continue
+        seen_names.add(original_name)
         if not allowed_file(original_name):
             continue
         safe_name = secure_filename(original_name)
@@ -3388,24 +4260,37 @@ def upload_file():
             "month": month,
             "category": selected_category
         })
+        _, file_error = write_upload_file(stored_name, payload)
+        if file_error:
+            if wants_json_response():
+                return jsonify({"error": file_error}), 500
+            return redirect(url_for("dashboard", upload_error="processing") + "#section-uploads")
         _, json_error = write_upload_json(stored_name, cached_data)
         if json_error:
+            delete_local_upload_file(stored_name)
             if wants_json_response():
                 return jsonify({"error": json_error}), 500
             return redirect(url_for("dashboard", upload_error="processing") + "#section-uploads")
 
-        insert_upload({
-            "id": upload_id,
-            "original_name": original_name,
-            "stored_name": stored_name,
-            "uploaded_at": uploaded_at,
-            "year": year,
-            "month": month,
-            "category": selected_category,
-            "uploaded_by": getattr(user, "id", None),
-            "data_json": cached_data,
-            "data_version": 2
-        })
+        try:
+            insert_upload({
+                "id": upload_id,
+                "original_name": original_name,
+                "stored_name": stored_name,
+                "uploaded_at": uploaded_at,
+                "year": year,
+                "month": month,
+                "category": selected_category,
+                "uploaded_by": getattr(user, "id", None),
+                "data_json": cached_data,
+                "data_version": 2
+            })
+        except RuntimeError as exc:
+            delete_local_upload_json(stored_name)
+            delete_local_upload_file(stored_name)
+            if wants_json_response():
+                return jsonify({"error": str(exc)}), 500
+            return redirect(url_for("dashboard", upload_error="processing") + "#section-uploads")
         added += 1
 
     if added == 0:
@@ -3427,7 +4312,9 @@ def delete_upload(upload_id):
     entry = fetch_upload(upload_id)
     if not entry:
         return redirect(url_for("dashboard") + "#section-uploads")
-    delete_upload_entry(upload_id)
+    ok, _error = delete_upload_entry(upload_id)
+    if not ok:
+        return redirect(url_for("dashboard", upload_error="delete") + "#section-uploads")
     return redirect(url_for("dashboard") + "#section-uploads")
 
 
@@ -3444,7 +4331,11 @@ def delete_upload_api(upload_id):
             return jsonify({"error": "File not found."}), 404
         return redirect(url_for("dashboard") + "#section-uploads")
 
-    delete_upload_entry(upload_id)
+    ok, error = delete_upload_entry(upload_id)
+    if not ok:
+        if wants_json_response():
+            return jsonify({"error": error or "Unable to delete upload."}), 500
+        return redirect(url_for("dashboard", upload_error="delete") + "#section-uploads")
     if wants_json_response():
         return jsonify({"ok": True})
     return redirect(url_for("dashboard") + "#section-uploads")
@@ -3617,10 +4508,14 @@ def api_upload():
         selected_category = "other"
 
     added = 0
+    seen_names = set()
     for file in files:
         if not file or not file.filename:
             continue
         original_name = file.filename.strip()
+        if original_name in seen_names:
+            continue
+        seen_names.add(original_name)
         if not allowed_file(original_name):
             continue
         safe_name = secure_filename(original_name)
@@ -3650,22 +4545,31 @@ def api_upload():
             "month": month,
             "category": selected_category
         })
+        _, file_error = write_upload_file(stored_name, payload)
+        if file_error:
+            return jsonify({"error": file_error}), 500
         _, json_error = write_upload_json(stored_name, cached_data)
         if json_error:
+            delete_local_upload_file(stored_name)
             return jsonify({"error": json_error}), 500
 
-        insert_upload({
-            "id": upload_id,
-            "original_name": original_name,
-            "stored_name": stored_name,
-            "uploaded_at": uploaded_at,
-            "year": year,
-            "month": month,
-            "category": selected_category,
-            "uploaded_by": getattr(user, "id", None),
-            "data_json": cached_data,
-            "data_version": 2
-        })
+        try:
+            insert_upload({
+                "id": upload_id,
+                "original_name": original_name,
+                "stored_name": stored_name,
+                "uploaded_at": uploaded_at,
+                "year": year,
+                "month": month,
+                "category": selected_category,
+                "uploaded_by": getattr(user, "id", None),
+                "data_json": cached_data,
+                "data_version": 2
+            })
+        except RuntimeError as exc:
+            delete_local_upload_json(stored_name)
+            delete_local_upload_file(stored_name)
+            return jsonify({"error": str(exc)}), 500
         added += 1
 
     if added == 0:
@@ -3682,7 +4586,9 @@ def api_delete_upload(upload_id):
     entry = fetch_upload(upload_id)
     if not entry:
         return jsonify({"error": "File not found."}), 404
-    delete_upload_entry(upload_id)
+    ok, error = delete_upload_entry(upload_id)
+    if not ok:
+        return jsonify({"error": error or "Unable to delete upload."}), 500
 
     payload = build_bootstrap_payload()
     return jsonify(payload)
@@ -3767,6 +4673,15 @@ def edd_sales_years():
         return jsonify({"error": "Unauthorized"}), 401
     entries = load_manifest(include_data=True)
     years = build_sales_year_options(entries)
+    return jsonify({"years": years})
+
+
+@app.route("/api/edd-peak-load-years")
+def edd_peak_load_years():
+    if not get_current_user():
+        return jsonify({"error": "Unauthorized"}), 401
+    entries = load_manifest(include_data=True)
+    years = build_peak_load_year_options(entries)
     return jsonify({"years": years})
 
 
@@ -3946,20 +4861,28 @@ def edd_hourly_months():
         days_map = cp_payload.get("days") or {}
         if not days_map:
             continue
+        period_items = build_full_hourly_month_items(entry, hourly, cp_payload.get("periods"))
+        if period_items:
+            items.extend(period_items)
+            continue
         date_values = [parse_iso_date(key) for key in days_map.keys()]
         date_values = [val for val in date_values if val]
         if not date_values:
             continue
-        start_date = min(date_values)
-        end_date = max(date_values)
-        items.append({
-            "id": entry.get("id"),
-            "year": end_date.year,
-            "month": end_date.month,
-            "start": format_date_ymd(start_date),
-            "end": format_date_ymd(end_date),
-            "label": format_billing_label(start_date, end_date)
-        })
+        month_dates = {}
+        for value in date_values:
+            month_dates.setdefault((value.year, value.month), []).append(value)
+        for (_year, _month), dates in month_dates.items():
+            start_date = min(dates)
+            end_date = max(dates)
+            items.append({
+                "id": entry.get("id"),
+                "year": end_date.year,
+                "month": end_date.month,
+                "start": format_date_ymd(start_date),
+                "end": format_date_ymd(end_date),
+                "label": format_billing_label(start_date, end_date)
+            })
 
     items.sort(key=lambda item: (item.get("year", 0), item.get("month", 0), item.get("start", "")))
 
@@ -3979,20 +4902,30 @@ def edd_hourly_kw_months():
         days_map, error = get_kw_days_map(entry)
         if error:
             continue
+        hourly = normalize_hourly_payload(entry)
+        kw_payload = hourly.get("kw") or {}
+        period_items = build_full_hourly_month_items(entry, hourly, kw_payload.get("periods"))
+        if period_items:
+            items.extend(period_items)
+            continue
         date_values = [parse_iso_date(key) for key in days_map.keys()]
         date_values = [val for val in date_values if val]
         if not date_values:
             continue
-        start_date = min(date_values)
-        end_date = max(date_values)
-        items.append({
-            "id": entry.get("id"),
-            "year": end_date.year,
-            "month": end_date.month,
-            "start": format_date_ymd(start_date),
-            "end": format_date_ymd(end_date),
-            "label": format_billing_label(start_date, end_date)
-        })
+        month_dates = {}
+        for value in date_values:
+            month_dates.setdefault((value.year, value.month), []).append(value)
+        for (_year, _month), dates in month_dates.items():
+            start_date = min(dates)
+            end_date = max(dates)
+            items.append({
+                "id": entry.get("id"),
+                "year": end_date.year,
+                "month": end_date.month,
+                "start": format_date_ymd(start_date),
+                "end": format_date_ymd(end_date),
+                "label": format_billing_label(start_date, end_date)
+            })
 
     items.sort(key=lambda item: (item.get("year", 0), item.get("month", 0), item.get("start", "")))
 
