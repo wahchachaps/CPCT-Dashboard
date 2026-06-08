@@ -973,6 +973,7 @@ input {
     align-items: flex-start;
     justify-content: space-between;
     gap: 12px;
+    flex-wrap: wrap;
 }
 
 .uploaded-data-head.comparison-head {
@@ -1145,6 +1146,10 @@ input {
     padding: 16px;
 }
 
+.upload-form.is-busy {
+    opacity: 0.9;
+}
+
 .upload-form input[type="file"] {
     width: 100%;
 }
@@ -1211,10 +1216,17 @@ input {
     font-size: 0.85rem;
     color: #1f2937;
     word-break: break-word;
+    transition: opacity 0.18s ease, transform 0.18s ease;
+    animation: uploadItemIn 0.18s ease;
 }
 
 .upload-selected-name {
     flex: 1;
+}
+
+.upload-selected-item.is-removing {
+    opacity: 0;
+    transform: translateY(-4px);
 }
 
 .upload-remove {
@@ -1264,6 +1276,7 @@ input {
     gap: 8px;
     font-size: 0.85rem;
     color: #475569;
+    flex-wrap: wrap;
 }
 
 .upload-filter label {
@@ -1304,6 +1317,14 @@ input {
     border: 1px solid #e2e8f0;
     border-radius: 10px;
     background: #f8fafc;
+    transition: opacity 0.18s ease, transform 0.18s ease, box-shadow 0.18s ease;
+    animation: uploadItemIn 0.18s ease;
+}
+
+.upload-item.is-removing {
+    opacity: 0;
+    transform: translateY(-4px);
+    box-shadow: none;
 }
 
 .upload-meta {
@@ -1321,6 +1342,17 @@ input {
 .upload-sub {
     font-size: 0.8rem;
     color: #64748b;
+}
+
+@keyframes uploadItemIn {
+    from {
+        opacity: 0;
+        transform: translateY(4px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
 }
 
 .upload-empty {

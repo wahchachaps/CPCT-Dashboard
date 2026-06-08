@@ -796,6 +796,16 @@ def infer_category_from_name(name):
     return "other"
 
 
+def filename_mentions_demand_only(filename):
+    normalized = normalize_filename_for_matching(filename)
+    return "demand" in normalized and "energy" not in normalized and "kwh" not in normalized
+
+
+def filename_mentions_energy_only(filename):
+    normalized = normalize_filename_for_matching(filename)
+    return ("energy" in normalized or "kwh" in normalized) and "demand" not in normalized
+
+
 def get_entry_category(entry):
     category = (entry.get("category") or "").strip().lower()
     if category in CATEGORY_OPTIONS:
@@ -958,6 +968,22 @@ def compute_hourly_max(days_map):
                 max_value = value if max_value is None else max(max_value, value)
         max_values.append(float(max_value or 0))
     return max_values
+
+
+def compute_hourly_sum(days_map):
+    if not days_map:
+        return []
+    sum_values = []
+    for hour in range(24):
+        total = 0.0
+        for series in days_map.values():
+            if not isinstance(series, list) or hour >= len(series):
+                continue
+            value = series[hour]
+            if isinstance(value, (int, float)):
+                total += float(value)
+        sum_values.append(total)
+    return sum_values
 
 
 def compute_hourly_min(days_map):
@@ -1867,6 +1893,18 @@ def extract_dashboard_metrics_from_xl(xl):
             except Exception as e:
                 return None, f"Error processing sheet '{excel_sheet_name}': {str(e)}"
 
+        consumers_payload, consumers_error = extract_consumers_energy_consumption_metric(xl)
+        if consumers_error:
+            return None, consumers_error
+        if consumers_payload:
+            metrics["consumers_energy_consumption"] = consumers_payload
+
+        power_rate_payload, power_rate_error = extract_power_rate_metric(xl)
+        if power_rate_error:
+            return None, power_rate_error
+        if power_rate_payload:
+            metrics["power_rate"] = power_rate_payload
+
         if not metrics:
             return None, "No recognized sheets found in the Excel file."
 
@@ -1879,6 +1917,138 @@ def extract_dashboard_metrics_from_xl(xl):
 
     except Exception as e:
         return None, f"Error reading Excel file: {str(e)}"
+
+
+def normalize_dashboard_period_value(raw_period):
+    if pd.isna(raw_period):
+        return None
+    parsed = parse_numeric_cell(raw_period)
+    if parsed is not None and float(parsed).is_integer():
+        year = int(parsed)
+        if 1900 <= year <= 2099:
+            return year
+    year = extract_year_from_text(raw_period)
+    return year
+
+
+def get_monthly_row_values(df, row):
+    monthly_data = {}
+    for month_name in MONTH_NAMES:
+        if month_name not in df.columns:
+            monthly_data[month_name] = None
+            continue
+        value = parse_numeric_cell(row.get(month_name))
+        monthly_data[month_name] = float(value) if value is not None else None
+    return monthly_data
+
+
+def row_has_monthly_values(monthly_data):
+    return any(value is not None for value in (monthly_data or {}).values())
+
+
+def extract_consumers_energy_consumption_metric(xl):
+    sheet_name = "Consumers Energy Consumption"
+    if sheet_name not in xl.sheet_names:
+        return None, None
+
+    try:
+        df = xl.parse(sheet_name)
+    except Exception as exc:
+        return None, f"Error processing sheet '{sheet_name}': {exc}"
+
+    required_columns = {"Year/Month", "Consumer Type"}
+    missing = [col for col in required_columns if col not in df.columns]
+    if missing:
+        return None, f"Missing required column(s) in sheet '{sheet_name}': {', '.join(missing)}"
+
+    data_rows = []
+    current_year = None
+    for _, row in df.iterrows():
+        year = normalize_dashboard_period_value(row.get("Year/Month"))
+        if year:
+            current_year = year
+        if not current_year:
+            continue
+        consumer_type = str(row.get("Consumer Type") or "").strip()
+        if not consumer_type or consumer_type.lower() == "nan":
+            continue
+        monthly_data = get_monthly_row_values(df, row)
+        if not row_has_monthly_values(monthly_data):
+            continue
+        data_rows.append({
+            "year": int(current_year),
+            "consumer_type": consumer_type,
+            "label": consumer_type,
+            "data": monthly_data
+        })
+
+    if not data_rows:
+        return None, None
+
+    return {
+        "sheet_name": sheet_name,
+        "data": data_rows,
+        "row_count": len(data_rows)
+    }, None
+
+
+def extract_power_rate_metric(xl):
+    sheet_name = "Power Rate"
+    if sheet_name not in xl.sheet_names:
+        return None, None
+
+    try:
+        df = xl.parse(sheet_name)
+    except Exception as exc:
+        return None, f"Error processing sheet '{sheet_name}': {exc}"
+
+    if "Year/Month" not in df.columns or "Consumer Type" not in df.columns:
+        return None, f"Missing required columns in sheet '{sheet_name}'"
+
+    grid_col = None
+    for col in df.columns:
+        normalized = str(col or "").strip().lower()
+        if normalized.startswith("unnamed"):
+            grid_col = col
+            break
+    if grid_col is None:
+        columns = list(df.columns)
+        grid_col = columns[1] if len(columns) > 1 else None
+
+    data_rows = []
+    current_year = None
+    current_grid = None
+    for _, row in df.iterrows():
+        year = normalize_dashboard_period_value(row.get("Year/Month"))
+        if year:
+            current_year = year
+        raw_grid = row.get(grid_col) if grid_col is not None else None
+        if pd.notna(raw_grid) and str(raw_grid).strip():
+            current_grid = str(raw_grid).strip()
+        if not current_year or not current_grid:
+            continue
+        consumer_type = str(row.get("Consumer Type") or "").strip()
+        if not consumer_type or consumer_type.lower() == "nan":
+            continue
+        monthly_data = get_monthly_row_values(df, row)
+        if not row_has_monthly_values(monthly_data):
+            continue
+        data_rows.append({
+            "year": int(current_year),
+            "grid": current_grid,
+            "consumer_type": consumer_type,
+            "label": f"{current_grid} {consumer_type}",
+            "data": monthly_data
+        })
+
+    if not data_rows:
+        return None, None
+
+    return {
+        "sheet_name": sheet_name,
+        "data": data_rows,
+        "row_count": len(data_rows)
+    }, None
 
 
 def normalize_sheet_lookup_text(value):
@@ -1926,10 +2096,10 @@ def find_yearly_hourly_sheets(xl):
     return sheets
 
 
-def extract_yearly_energy_hourly_from_xl(xl):
+def collect_yearly_hourly_day_values(xl, use_max=False):
     sheets = find_yearly_hourly_sheets(xl)
     if not sheets:
-        return None, "Yearly Energy sheet not found."
+        return None, [], "Yearly hourly sheet not found."
 
     day_hour_sum = {}
     used_sheets = []
@@ -1969,10 +2139,23 @@ def extract_yearly_energy_hourly_from_xl(xl):
                 if numeric_value is None:
                     continue
                 day_map = day_hour_sum.setdefault(sample_day, {})
-                day_map[bucket] = day_map.get(bucket, 0.0) + float(numeric_value)
+                value = float(numeric_value)
+                if use_max:
+                    current = day_map.get(bucket)
+                    day_map[bucket] = value if current is None else max(current, value)
+                else:
+                    day_map[bucket] = day_map.get(bucket, 0.0) + value
                 sheet_has_values = True
         if sheet_has_values:
             used_sheets.append(sheet)
+
+    return day_hour_sum, used_sheets, None
+
+
+def extract_yearly_energy_hourly_from_xl(xl):
+    day_hour_sum, used_sheets, error = collect_yearly_hourly_day_values(xl, use_max=False)
+    if error:
+        return None, "Yearly Energy sheet not found."
 
     days = build_days_from_hour_map(day_hour_sum)
     if not days:
@@ -1988,7 +2171,31 @@ def extract_yearly_energy_hourly_from_xl(xl):
         "days": days,
         "periods": build_demand_energy_periods(period_dates),
         "month_max": compute_hourly_max(days),
+        "month_sum": compute_hourly_sum(days),
         "month_avg": compute_hourly_avg(days),
+        "source_sheets": used_sheets
+    }, None
+
+
+def extract_yearly_demand_hourly_from_xl(xl):
+    day_hour_max, used_sheets, error = collect_yearly_hourly_day_values(xl, use_max=True)
+    if error:
+        return None, "Yearly Demand sheet not found."
+
+    days = build_days_from_hour_map(day_hour_max)
+    if not days:
+        return None, "No usable yearly Demand hourly data found."
+
+    period_dates = {}
+    for day in sorted(day_hour_max.keys()):
+        period_key = make_billing_period_key(day)
+        if period_key:
+            period_dates.setdefault(period_key, set()).add(day)
+
+    return {
+        "days": days,
+        "periods": build_demand_energy_periods(period_dates),
+        "month_max": compute_hourly_max(days),
         "source_sheets": used_sheets
     }, None
 
@@ -2518,6 +2725,69 @@ def get_dashboard_metric_values(metric, year, percent=False):
     return None
 
 
+def get_grouped_dashboard_metric_years(entries, metric_key):
+    metric = get_dashboard_metric(entries, metric_key)
+    if not metric:
+        return []
+    years = set()
+    for row in metric.get("data") or []:
+        try:
+            year = int(row.get("year"))
+        except (TypeError, ValueError):
+            continue
+        if any(parse_numeric_cell((row.get("data") or {}).get(month)) is not None for month in MONTH_NAMES):
+            years.add(year)
+    return sorted(years, reverse=True)
+
+
+def build_grouped_dashboard_metric_payload(entries, metric_key, year, metric_label):
+    metric = get_dashboard_metric(entries, metric_key)
+    if not metric:
+        return None
+
+    datasets = []
+    option_labels = []
+    for row in metric.get("data") or []:
+        try:
+            row_year = int(row.get("year"))
+        except (TypeError, ValueError):
+            continue
+        if row_year != year:
+            continue
+        data = row.get("data") or {}
+        values = []
+        for month in MONTH_NAMES:
+            value = parse_numeric_cell(data.get(month))
+            values.append(float(value) if value is not None else None)
+        if all(value is None for value in values):
+            continue
+        label = str(row.get("label") or row.get("consumer_type") or "").strip()
+        if not label:
+            continue
+        option_labels.append(label)
+        dataset = {
+            "label": label,
+            "values": values
+        }
+        if row.get("grid"):
+            dataset["grid"] = row.get("grid")
+        if row.get("consumer_type"):
+            dataset["consumer_type"] = row.get("consumer_type")
+        datasets.append(dataset)
+
+    if not datasets:
+        return None
+
+    return {
+        "labels": MONTH_NAMES[:],
+        "datasets": datasets,
+        "options": option_labels,
+        "metric": metric_label,
+        "year": year,
+        "sheet_name": metric.get("sheet_name", "")
+    }
+
+
 def precompute_upload_data(file_bytes, filename, category):
     ext = os.path.splitext(filename)[1].lower()
     if ext == ".csv" and category in ("hourly", "hourly_kwh", "hourly_kw", "edd", "energization", "dashboard_metrics"):
@@ -2569,7 +2839,7 @@ def precompute_upload_data(file_bytes, filename, category):
     if category == "energy_demand":
         labels = build_hour_labels()
         energy_payload, energy_error = extract_energy_hourly_from_xl(xl)
-        if energy_error:
+        if energy_error and not filename_mentions_demand_only(filename):
             yearly_energy_payload, yearly_energy_error = extract_yearly_energy_hourly_from_xl(xl)
             if yearly_energy_payload:
                 energy_payload = yearly_energy_payload
@@ -2577,6 +2847,13 @@ def precompute_upload_data(file_bytes, filename, category):
             else:
                 energy_error = yearly_energy_error or energy_error
         demand_payload, demand_error = extract_demand_hourly_from_xl(xl)
+        if demand_error and not filename_mentions_energy_only(filename):
+            yearly_demand_payload, yearly_demand_error = extract_yearly_demand_hourly_from_xl(xl)
+            if yearly_demand_payload:
+                demand_payload = yearly_demand_payload
+                demand_error = None
+            else:
+                demand_error = yearly_demand_error or demand_error
         
         if energy_error and demand_error:
             return None, f"Energy: {energy_error} | Demand: {demand_error}"
@@ -2586,20 +2863,23 @@ def precompute_upload_data(file_bytes, filename, category):
         
         if not energy_payload and not demand_payload:
             return None, "No usable Energy or Demand data found."
+
+        energy_source = None
+        if cp_payload:
+            energy_source = find_energy_sheet(xl.sheet_names) or (cp_payload or {}).get("source_sheets") or find_yearly_hourly_sheet(xl)
+        demand_source = None
+        if kw_payload:
+            demand_source = find_demand_sheet(xl.sheet_names) or (kw_payload or {}).get("source_sheets") or find_yearly_hourly_sheet(xl)
         
         return {
             "hourly": {
                 "labels": labels,
                 "cp": cp_payload,
                 "kw": kw_payload,
-                "source_sheet": (
-                    find_energy_sheet(xl.sheet_names)
-                    or next(iter((cp_payload or {}).get("source_sheets") or []), None)
-                    or find_yearly_hourly_sheet(xl)
-                ),
+                "source_sheet": next(iter(energy_source or demand_source or []), None) if isinstance(energy_source or demand_source, list) else (energy_source or demand_source),
                 "source_sheets": {
-                    "energy": find_energy_sheet(xl.sheet_names) or (cp_payload or {}).get("source_sheets") or find_yearly_hourly_sheet(xl),
-                    "demand": find_demand_sheet(xl.sheet_names)
+                    "energy": energy_source,
+                    "demand": demand_source
                 }
             }
         }, None
@@ -4834,7 +5114,9 @@ def edd_hourly_month(upload_id):
         return jsonify({"error": "No cached data found for this file. Please re-upload it."}), 400
 
     filtered = filter_days_map(days_map, start_date, end_date) if start_date and end_date else days_map
-    values = cp_payload.get("month_max") if not (start_date and end_date) else compute_hourly_max(filtered)
+    values = cp_payload.get("month_sum") if not (start_date and end_date) else compute_hourly_sum(filtered)
+    if not values:
+        values = compute_hourly_sum(filtered)
     if not values:
         return jsonify({"error": "No usable data found for that month."}), 400
 
@@ -5094,6 +5376,46 @@ def edd_sales_year(year):
     if not payload:
         return jsonify({"error": "No Sales data found for that year."}), 400
 
+    return jsonify(payload)
+
+
+@app.route("/api/dashboard-consumers-years")
+def dashboard_consumers_years():
+    if not get_current_user():
+        return jsonify({"error": "Unauthorized"}), 401
+    entries = load_manifest(include_data=True)
+    years = get_grouped_dashboard_metric_years(entries, "consumers_energy_consumption")
+    return jsonify({"years": years})
+
+
+@app.route("/api/dashboard-consumers-year/<int:year>")
+def dashboard_consumers_year(year):
+    if not get_current_user():
+        return jsonify({"error": "Unauthorized"}), 401
+    entries = load_manifest(include_data=True)
+    payload = build_grouped_dashboard_metric_payload(entries, "consumers_energy_consumption", year, "Energy Consumption (kWh)")
+    if not payload:
+        return jsonify({"error": "No Consumers Energy Consumption data found for that year."}), 400
+    return jsonify(payload)
+
+
+@app.route("/api/dashboard-power-rate-years")
+def dashboard_power_rate_years():
+    if not get_current_user():
+        return jsonify({"error": "Unauthorized"}), 401
+    entries = load_manifest(include_data=True)
+    years = get_grouped_dashboard_metric_years(entries, "power_rate")
+    return jsonify({"years": years})
+
+
+@app.route("/api/dashboard-power-rate-year/<int:year>")
+def dashboard_power_rate_year(year):
+    if not get_current_user():
+        return jsonify({"error": "Unauthorized"}), 401
+    entries = load_manifest(include_data=True)
+    payload = build_grouped_dashboard_metric_payload(entries, "power_rate", year, "Power Rate")
+    if not payload:
+        return jsonify({"error": "No Power Rate data found for that year."}), 400
     return jsonify(payload)
 
 

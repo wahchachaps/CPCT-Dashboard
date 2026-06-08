@@ -2588,7 +2588,7 @@
         remove.className = "ghost-btn";
         remove.textContent = "Remove";
         remove.addEventListener("click", function () {
-            deleteUpload(item.id);
+            deleteUpload(item.id, listItem, remove);
         });
 
         listItem.appendChild(meta);
@@ -2779,8 +2779,9 @@
         setFactSheetLastEdited(payload.last_edited, payload.last_edited_display);
     }
 
-    function renderBootstrap(payload) {
+    function renderBootstrap(payload, options) {
         if (!payload) return;
+        const shouldRefreshDashboardMetrics = !options || options.refreshDashboardMetrics !== false;
         const groups = payload.upload_groups || [];
         const recent = payload.recent_uploads || [];
         renderRecentUploads(recent);
@@ -2793,8 +2794,7 @@
         if (typeof window.applyUploadFilters === "function") {
             window.applyUploadFilters();
         }
-        // Load dashboard metrics data
-        if (typeof window.refreshDashboardMetrics === "function") {
+        if (shouldRefreshDashboardMetrics && typeof window.refreshDashboardMetrics === "function") {
             window.refreshDashboardMetrics();
         }
     }
@@ -3000,45 +3000,66 @@
         setInlineEditable(false);
     }
 
-    function deleteUpload(uploadId) {
+    function deleteUpload(uploadId, sourceNode, sourceButton) {
         if (!uploadId) return;
         setUploadError("");
+        if (sourceButton) {
+            sourceButton.disabled = true;
+        }
+        if (sourceNode) {
+            sourceNode.classList.add("is-removing");
+        } else {
+            document.querySelectorAll(`[data-upload-id="${uploadId}"]`).forEach(function (node) {
+                node.classList.add("is-removing");
+            });
+        }
         fetchJson(`/delete/${uploadId}`, { method: "POST" }).then(function (result) {
             if (!result.ok) {
+                if (sourceButton) {
+                    sourceButton.disabled = false;
+                }
+                if (sourceNode) {
+                    sourceNode.classList.remove("is-removing");
+                } else {
+                    document.querySelectorAll(`[data-upload-id="${uploadId}"]`).forEach(function (node) {
+                        node.classList.remove("is-removing");
+                    });
+                }
                 setUploadError(result.payload.error || "Unable to delete upload.");
                 return;
             }
-            const nodes = document.querySelectorAll(`[data-upload-id="${uploadId}"]`);
-            nodes.forEach(function (node) {
-                if (node && node.parentNode) {
-                    node.parentNode.removeChild(node);
+            window.setTimeout(function () {
+                renderBootstrap(result.payload || {}, { refreshDashboardMetrics: false });
+                if (typeof window.refreshHourlyDayChartMonths === "function") {
+                    window.refreshHourlyDayChartMonths();
                 }
-            });
-            loadBootstrap();
-            if (typeof window.refreshHourlyDayChartMonths === "function") {
-                window.refreshHourlyDayChartMonths();
-            }
-            if (typeof window.refreshHourlyDayKwChartMonths === "function") {
-                window.refreshHourlyDayKwChartMonths();
-            }
-            if (typeof window.refreshSystemLossYears === "function") {
-                window.refreshSystemLossYears();
-            }
-            if (typeof window.refreshSalesYears === "function") {
-                window.refreshSalesYears();
-            }
-            if (typeof window.refreshPeakLoadYears === "function") {
-                window.refreshPeakLoadYears();
-            }
-            if (typeof window.refreshEnergizationMapData === "function") {
-                window.refreshEnergizationMapData();
-            }
-            if (typeof window.refreshDashboardMetrics === "function") {
-                window.refreshDashboardMetrics();
-            }
-            if (typeof window.refreshDashboardMetricsCharts === "function") {
-                window.refreshDashboardMetricsCharts();
-            }
+                if (typeof window.refreshHourlyDayKwChartMonths === "function") {
+                    window.refreshHourlyDayKwChartMonths();
+                }
+                if (typeof window.refreshSystemLossYears === "function") {
+                    window.refreshSystemLossYears();
+                }
+                if (typeof window.refreshSalesYears === "function") {
+                    window.refreshSalesYears();
+                }
+                if (typeof window.refreshPeakLoadYears === "function") {
+                    window.refreshPeakLoadYears();
+                }
+                if (typeof window.refreshEnergizationMapData === "function") {
+                    window.refreshEnergizationMapData();
+                }
+                const dashboardRefresh = typeof window.refreshDashboardMetrics === "function"
+                    ? window.refreshDashboardMetrics()
+                    : Promise.resolve();
+                Promise.resolve(dashboardRefresh).then(function () {
+                    if (typeof window.refreshDashboardMetricsCharts === "function") {
+                        window.refreshDashboardMetricsCharts();
+                    }
+                });
+                if (sourceButton) {
+                    sourceButton.disabled = false;
+                }
+            }, 180);
         });
     }
 
@@ -3053,6 +3074,7 @@
         const errorBox = document.getElementById("uploadError");
         const submitButton = document.getElementById("uploadSubmit");
         let selectedFiles = [];
+        let uploadInFlight = false;
 
         function fileKey(file) {
             return `${file.name}::${file.size}::${file.lastModified}`;
@@ -3077,6 +3099,7 @@
         function renderSelectedFiles() {
             if (selectedList) {
                 selectedList.innerHTML = "";
+                const fragment = document.createDocumentFragment();
                 selectedFiles.forEach(function (file) {
                     const item = document.createElement("li");
                     item.className = "upload-selected-item";
@@ -3090,16 +3113,20 @@
                     remove.className = "upload-remove";
                     remove.textContent = "x";
                     remove.addEventListener("click", function () {
-                        selectedFiles = selectedFiles.filter(function (entry) {
-                            return fileKey(entry) !== fileKey(file);
-                        });
-                        renderSelectedFiles();
+                        item.classList.add("is-removing");
+                        window.setTimeout(function () {
+                            selectedFiles = selectedFiles.filter(function (entry) {
+                                return fileKey(entry) !== fileKey(file);
+                            });
+                            renderSelectedFiles();
+                        }, 160);
                     });
 
                     item.appendChild(name);
                     item.appendChild(remove);
-                    selectedList.appendChild(item);
+                    fragment.appendChild(item);
                 });
+                selectedList.appendChild(fragment);
             }
 
             if (selectedEmpty) {
@@ -3112,7 +3139,7 @@
             );
 
             if (submitButton) {
-                submitButton.disabled = selectedFiles.length === 0 || !!validationMessage;
+                submitButton.disabled = uploadInFlight || selectedFiles.length === 0 || !!validationMessage;
             }
 
             if (selectedFiles.length === 0) {
@@ -3147,6 +3174,9 @@
 
         uploadForm.addEventListener("submit", function (event) {
             event.preventDefault();
+            if (uploadInFlight) {
+                return;
+            }
             if (selectedFiles.length === 0) {
                 if (errorBox) {
                     errorBox.textContent = "Please select at least one file before uploading.";
@@ -3168,6 +3198,8 @@
             if (submitButton) {
                 submitButton.disabled = true;
             }
+            uploadInFlight = true;
+            uploadForm.classList.add("is-busy");
             syncInputFiles();
             const formData = new FormData(uploadForm);
             fetchJson("/upload", {
@@ -3184,7 +3216,7 @@
                 selectedFiles = [];
                 renderSelectedFiles();
                 if (result.payload && result.payload.upload_groups) {
-                    renderBootstrap(result.payload);
+                    renderBootstrap(result.payload, { refreshDashboardMetrics: false });
                 } else {
                     loadBootstrap();
                 }
@@ -3206,14 +3238,24 @@
                 if (typeof window.refreshEnergizationMapData === "function") {
                     window.refreshEnergizationMapData();
                 }
-                if (typeof window.refreshDashboardMetrics === "function") {
-                    window.refreshDashboardMetrics();
-                }
-                if (typeof window.refreshDashboardMetricsCharts === "function") {
-                    window.refreshDashboardMetricsCharts();
-                }
+                const dashboardRefresh = typeof window.refreshDashboardMetrics === "function"
+                    ? window.refreshDashboardMetrics()
+                    : Promise.resolve();
+                Promise.resolve(dashboardRefresh).then(function () {
+                    if (typeof window.refreshDashboardMetricsCharts === "function") {
+                        window.refreshDashboardMetricsCharts();
+                    }
+                });
+            }).catch(function () {
+                setUploadError("Unable to upload files.");
+            }).finally(function () {
+                uploadInFlight = false;
+                uploadForm.classList.remove("is-busy");
                 if (submitButton) {
-                    submitButton.disabled = false;
+                    submitButton.disabled = selectedFiles.length === 0 || !!getUploadValidationMessage(
+                        categorySelect ? categorySelect.value : "",
+                        selectedFiles
+                    );
                 }
             });
         });
@@ -3680,7 +3722,7 @@
             daySelect.disabled = false;
             const allOption = document.createElement("option");
             allOption.value = "all";
-            allOption.textContent = "All days (max)";
+            allOption.textContent = "All days (total)";
             daySelect.appendChild(allOption);
             days.forEach(function (day) {
                 const option = document.createElement("option");
@@ -5227,6 +5269,7 @@
 
             if (dashboardMetricsUploads.length === 0) {
                 window.dashboardMetricsPayload = null;
+                window.dashboardMetricsUpload = null;
                 return null;
             }
 
@@ -5238,6 +5281,12 @@
 
             if (typeof window.refreshSalesYears === "function") {
                 window.refreshSalesYears();
+            }
+            if (typeof window.refreshConsumersYears === "function") {
+                window.refreshConsumersYears();
+            }
+            if (typeof window.refreshPowerRateYears === "function") {
+                window.refreshPowerRateYears();
             }
             if (typeof window.refreshSystemLossYears === "function") {
                 window.refreshSystemLossYears();
@@ -5460,6 +5509,639 @@
             option.textContent = year;
             compareYearSelect.appendChild(option);
         });
+    }
+
+    function getDashboardGroupedMetricRows(metricKey) {
+        const payload = window.dashboardMetricsPayload || {};
+        const metric = payload[metricKey];
+        return metric && Array.isArray(metric.data) ? metric.data : [];
+    }
+
+    function getDashboardGroupedMetricYears(rows) {
+        const years = [];
+        (rows || []).forEach(function (row) {
+            const year = Number(row && row.year);
+            if (!Number.isFinite(year)) return;
+            if (years.indexOf(year) === -1) {
+                years.push(year);
+            }
+        });
+        return years.sort(function (a, b) {
+            return b - a;
+        });
+    }
+
+    function getDashboardGroupedMetricLabel(row, selectionKey) {
+        const source = row || {};
+        if (selectionKey === "label") {
+            return String(source.label || "").trim();
+        }
+        return String(source[selectionKey] || source.label || "").trim();
+    }
+
+    function getDashboardGroupedMetricRowsForSelection(rows, year, selectionKey, selectionValue) {
+        return (rows || []).filter(function (row) {
+            if (Number(row && row.year) !== Number(year)) {
+                return false;
+            }
+            if (!selectionValue || selectionValue === "all") {
+                return true;
+            }
+            return getDashboardGroupedMetricLabel(row, selectionKey).toLowerCase() === String(selectionValue).trim().toLowerCase();
+        });
+    }
+
+    function getDashboardMonthNames() {
+        return [
+            "January", "February", "March", "April", "May", "June",
+            "July", "August", "September", "October", "November", "December"
+        ];
+    }
+
+    function getDashboardMetricPalette() {
+        return [
+            { border: "#2563eb", background: "rgba(37, 99, 235, 0.16)" },
+            { border: "#16a34a", background: "rgba(22, 163, 74, 0.16)" },
+            { border: "#f59e0b", background: "rgba(245, 158, 11, 0.16)" },
+            { border: "#ef4444", background: "rgba(239, 68, 68, 0.16)" },
+            { border: "#7c3aed", background: "rgba(124, 58, 237, 0.16)" },
+            { border: "#0891b2", background: "rgba(8, 145, 178, 0.16)" },
+            { border: "#db2777", background: "rgba(219, 39, 119, 0.16)" },
+            { border: "#0f766e", background: "rgba(15, 118, 110, 0.16)" },
+            { border: "#ca8a04", background: "rgba(202, 138, 4, 0.16)" },
+            { border: "#475569", background: "rgba(71, 85, 105, 0.16)" }
+        ];
+    }
+
+    function hashDashboardText(value) {
+        const text = String(value || "");
+        let hash = 0;
+        for (let i = 0; i < text.length; i += 1) {
+            hash = ((hash << 5) - hash) + text.charCodeAt(i);
+            hash |= 0;
+        }
+        return Math.abs(hash);
+    }
+
+    function getDashboardSeriesStyle(label, variant) {
+        const palette = getDashboardMetricPalette();
+        const color = palette[hashDashboardText(label) % palette.length];
+        if (variant === "compare") {
+            return {
+                borderColor: color.border,
+                backgroundColor: color.background,
+                borderDash: [6, 4]
+            };
+        }
+        return {
+            borderColor: color.border,
+            backgroundColor: color.background
+        };
+    }
+
+    function createDashboardSeriesCollection(rows, year, selectionKey, selectionValue, mode) {
+        const months = getDashboardMonthNames();
+        const filteredRows = getDashboardGroupedMetricRowsForSelection(rows, year, selectionKey, selectionValue);
+        if (!filteredRows.length) {
+            return [];
+        }
+
+        const seriesOrder = [];
+        const seriesMap = {};
+        filteredRows.forEach(function (row) {
+            const label = getDashboardGroupedMetricLabel(row, selectionKey);
+            if (!label) return;
+            if (!seriesMap[label]) {
+                seriesMap[label] = {
+                    label: label,
+                    sums: months.map(function () { return 0; }),
+                    counts: months.map(function () { return 0; }),
+                    present: months.map(function () { return false; })
+                };
+                seriesOrder.push(label);
+            }
+
+            const series = seriesMap[label];
+            months.forEach(function (month, index) {
+                const value = parseDashboardNumber(row && row.data ? row.data[month] : null);
+                if (value === null) return;
+                series.present[index] = true;
+                series.sums[index] += value;
+                series.counts[index] += 1;
+            });
+        });
+
+        return seriesOrder.map(function (label) {
+            const series = seriesMap[label];
+            const values = months.map(function (_month, index) {
+                if (!series.present[index]) return null;
+                if (mode === "average" && series.counts[index] > 0) {
+                    return series.sums[index] / series.counts[index];
+                }
+                return series.sums[index];
+            });
+            return {
+                label: label,
+                values: values
+            };
+        });
+    }
+
+    function buildDashboardGroupedMetricPayload(rows, year, selectionKey, selectionValue, mode) {
+        const series = createDashboardSeriesCollection(rows, year, selectionKey, selectionValue, mode);
+        if (!series.length) {
+            return null;
+        }
+        return {
+            year: String(year),
+            selection: selectionValue || "all",
+            labels: getDashboardMonthNames(),
+            datasets: series.map(function (item) {
+                const style = getDashboardSeriesStyle(item.label, "main");
+                return {
+                    label: item.label,
+                    data: item.values,
+                    borderColor: style.borderColor,
+                    backgroundColor: style.backgroundColor,
+                    pointBackgroundColor: style.borderColor,
+                    pointRadius: 4,
+                    pointHoverRadius: 8,
+                    tension: 0.25,
+                    fill: true,
+                    spanGaps: true
+                };
+            }),
+            series_count: series.length
+        };
+    }
+
+    function buildDashboardGroupedMetricComparison(rows, selectedYear, compareYear, selectionKey, selectionValue, mode) {
+        const leftSeries = createDashboardSeriesCollection(rows, selectedYear, selectionKey, selectionValue, mode);
+        const rightSeries = createDashboardSeriesCollection(rows, compareYear, selectionKey, selectionValue, mode);
+        if (!leftSeries.length && !rightSeries.length) {
+            return null;
+        }
+
+        const seriesLabels = [];
+        leftSeries.forEach(function (item) {
+            if (seriesLabels.indexOf(item.label) === -1) {
+                seriesLabels.push(item.label);
+            }
+        });
+        rightSeries.forEach(function (item) {
+            if (seriesLabels.indexOf(item.label) === -1) {
+                seriesLabels.push(item.label);
+            }
+        });
+
+        const leftMap = {};
+        leftSeries.forEach(function (item) {
+            leftMap[item.label] = item;
+        });
+        const rightMap = {};
+        rightSeries.forEach(function (item) {
+            rightMap[item.label] = item;
+        });
+
+        const datasets = [];
+        seriesLabels.forEach(function (label) {
+            const left = leftMap[label];
+            const right = rightMap[label];
+            const mainStyle = getDashboardSeriesStyle(label, "main");
+            const compareStyle = getDashboardSeriesStyle(label, "compare");
+
+            if (left) {
+                datasets.push({
+                    label: `${label} (${selectedYear})`,
+                    data: left.values,
+                    borderColor: mainStyle.borderColor,
+                    backgroundColor: mainStyle.backgroundColor,
+                    pointBackgroundColor: mainStyle.borderColor,
+                    pointRadius: 4,
+                    pointHoverRadius: 8,
+                    tension: 0.25,
+                    fill: false,
+                    spanGaps: true
+                });
+            }
+            if (right) {
+                datasets.push({
+                    label: `${label} (${compareYear})`,
+                    data: right.values,
+                    borderColor: compareStyle.borderColor,
+                    backgroundColor: compareStyle.backgroundColor,
+                    pointBackgroundColor: compareStyle.borderColor,
+                    pointRadius: 4,
+                    pointHoverRadius: 8,
+                    tension: 0.25,
+                    fill: false,
+                    spanGaps: true,
+                    borderDash: compareStyle.borderDash
+                });
+            }
+        });
+
+        return {
+            labels: getDashboardMonthNames(),
+            datasets: datasets,
+            series_count: seriesLabels.length
+        };
+    }
+
+    function createMonthPointStyles(values, selectedMonthNumber, activeColor, baseColor) {
+        return {
+            radius: values.map(function (_value, index) {
+                if (!selectedMonthNumber) {
+                    return 4;
+                }
+                return index === (selectedMonthNumber - 1) ? 6 : 3;
+            }),
+            backgroundColor: values.map(function (_value, index) {
+                if (!selectedMonthNumber) {
+                    return baseColor;
+                }
+                return index === (selectedMonthNumber - 1) ? activeColor : baseColor;
+            })
+        };
+    }
+
+    function collectDashboardDatasetValues(datasets) {
+        return (datasets || []).reduce(function (accumulator, dataset) {
+            return accumulator.concat(dataset && Array.isArray(dataset.data) ? dataset.data : []);
+        }, []);
+    }
+
+    function toShortMonthLabel(label) {
+        const text = String(label || "").trim();
+        if (!text) return text;
+        const map = {
+            january: "JAN",
+            february: "FEB",
+            march: "MAR",
+            april: "APR",
+            may: "MAY",
+            june: "JUN",
+            july: "JUL",
+            august: "AUG",
+            september: "SEP",
+            october: "OCT",
+            november: "NOV",
+            december: "DEC"
+        };
+        const lower = text.toLowerCase();
+        if (map[lower]) return map[lower];
+        if (lower.length >= 3) return lower.slice(0, 3).toUpperCase();
+        return text.toUpperCase();
+    }
+
+    function initDashboardGroupedMetricChart(config) {
+        const yearSelect = document.getElementById(config.yearSelectId);
+        const monthSelect = document.getElementById(config.monthSelectId);
+        const typeSelect = config.typeSelectId ? document.getElementById(config.typeSelectId) : null;
+        const comparisonYearSelect = document.getElementById(config.comparisonYearSelectId);
+        const compareYearSelect = document.getElementById(config.compareYearSelectId);
+        const compareWrap = document.getElementById(config.compareWrapId);
+        const canvas = document.getElementById(config.canvasId);
+        const compareCanvas = document.getElementById(config.compareCanvasId);
+        const status = document.getElementById(config.statusId);
+
+        if (!yearSelect || !monthSelect || !comparisonYearSelect || !compareYearSelect || !compareWrap || !canvas || !compareCanvas || !window.Chart) {
+            return;
+        }
+
+        let chart = null;
+        let compareChart = null;
+        let activePayload = null;
+
+        function setStatus(message) {
+            if (!status) return;
+            status.textContent = message || "";
+            status.classList.toggle("is-visible", !!message);
+        }
+
+        function selectedMonthNumber() {
+            const raw = String(monthSelect.value || "all").trim().toLowerCase();
+            if (raw === "all") return null;
+            const parsed = Number.parseInt(raw, 10);
+            if (!Number.isFinite(parsed) || parsed < 1 || parsed > 12) return null;
+            return parsed;
+        }
+
+        function getRows() {
+            return getDashboardGroupedMetricRows(config.metricKey);
+        }
+
+        function populateYearOptions(years) {
+            const previousYear = yearSelect.value || "";
+            const previousComparisonYear = comparisonYearSelect.value || "";
+            const previousCompareYear = compareYearSelect.value || "";
+
+            yearSelect.innerHTML = "";
+            comparisonYearSelect.innerHTML = "";
+            compareYearSelect.innerHTML = "";
+
+            const compareNoneOption = document.createElement("option");
+            compareNoneOption.value = "";
+            compareNoneOption.textContent = "None";
+            compareYearSelect.appendChild(compareNoneOption);
+
+            if (!years || years.length === 0) {
+                const yearOption = document.createElement("option");
+                yearOption.value = "";
+                yearOption.textContent = "No years available";
+                yearSelect.appendChild(yearOption);
+
+                const comparisonOption = document.createElement("option");
+                comparisonOption.value = "";
+                comparisonOption.textContent = "No years available";
+                comparisonYearSelect.appendChild(comparisonOption);
+
+                yearSelect.disabled = true;
+                comparisonYearSelect.disabled = true;
+                compareYearSelect.disabled = true;
+                compareWrap.hidden = true;
+                setStatus("Upload a Dashboard Metrics file to view this chart.");
+                return;
+            }
+
+            years.forEach(function (year) {
+                const yearOption = document.createElement("option");
+                yearOption.value = String(year);
+                yearOption.textContent = String(year);
+                yearSelect.appendChild(yearOption);
+
+                const comparisonOption = document.createElement("option");
+                comparisonOption.value = String(year);
+                comparisonOption.textContent = String(year);
+                comparisonYearSelect.appendChild(comparisonOption);
+
+                const compareOption = document.createElement("option");
+                compareOption.value = String(year);
+                compareOption.textContent = String(year);
+                compareYearSelect.appendChild(compareOption);
+            });
+
+            yearSelect.disabled = false;
+            comparisonYearSelect.disabled = false;
+            compareYearSelect.disabled = false;
+
+            const availableYears = Array.from(yearSelect.options).map(function (option) {
+                return option.value;
+            });
+            yearSelect.value = availableYears.indexOf(previousYear) !== -1 ? previousYear : String(years[0]);
+
+            const availableComparisonYears = Array.from(comparisonYearSelect.options).map(function (option) {
+                return option.value;
+            });
+            comparisonYearSelect.value = availableComparisonYears.indexOf(previousComparisonYear) !== -1 ? previousComparisonYear : yearSelect.value;
+
+            const availableCompareYears = Array.from(compareYearSelect.options).map(function (option) {
+                return option.value;
+            });
+            compareYearSelect.value = availableCompareYears.indexOf(previousCompareYear) !== -1 ? previousCompareYear : "";
+        }
+
+        function populateTypeOptions(rows) {
+            if (!typeSelect) {
+                return;
+            }
+            const previous = typeSelect.value || "all";
+            typeSelect.innerHTML = "";
+
+            const allOption = document.createElement("option");
+            allOption.value = "all";
+            allOption.textContent = config.allSelectionLabel || "All";
+            typeSelect.appendChild(allOption);
+
+            const available = Array.from(typeSelect.options).map(function (option) {
+                return option.value;
+            });
+            typeSelect.value = available.indexOf(previous) !== -1 ? previous : "all";
+            typeSelect.disabled = typeSelect.options.length <= 1;
+        }
+
+        function populateMonthOptions() {
+            const previous = monthSelect.value || "all";
+            monthSelect.innerHTML = "";
+
+            const allOption = document.createElement("option");
+            allOption.value = "all";
+            allOption.textContent = "All months";
+            monthSelect.appendChild(allOption);
+
+            [
+                "January", "February", "March", "April", "May", "June",
+                "July", "August", "September", "October", "November", "December"
+            ].forEach(function (month, index) {
+                const option = document.createElement("option");
+                option.value = String(index + 1);
+                option.textContent = month;
+                monthSelect.appendChild(option);
+            });
+
+            const available = Array.from(monthSelect.options).map(function (option) {
+                return option.value;
+            });
+            monthSelect.value = available.indexOf(previous) !== -1 ? previous : "all";
+            monthSelect.disabled = monthSelect.options.length <= 1;
+        }
+
+        function buildMainPayload() {
+            const rows = getRows();
+            const year = yearSelect.value;
+            if (!year) return null;
+            return buildDashboardGroupedMetricPayload(
+                rows,
+                year,
+                config.selectionKey,
+                typeSelect ? typeSelect.value || "all" : "all",
+                config.aggregateMode
+            );
+        }
+
+        function updateMainChart() {
+            const payload = buildMainPayload();
+            activePayload = payload;
+
+            if (!payload) {
+                if (chart) {
+                    chart.destroy();
+                    chart = null;
+                }
+                setStatus("Upload a Dashboard Metrics file to view this chart.");
+                compareWrap.hidden = true;
+                return;
+            }
+
+            const selectedMonth = selectedMonthNumber();
+            const displayLabels = payload.labels.map(toShortMonthLabel);
+            const yScale = Object.assign({}, getScaleBounds(collectDashboardDatasetValues(payload.datasets), { beginAtZero: true, minPadding: 1, paddingRatio: 0.12 }), {
+                title: { display: true, text: config.metricLabel }
+            });
+
+            if (chart) {
+                chart.data.labels = displayLabels;
+                chart.data.datasets = (payload.datasets || []).map(function (dataset) {
+                    const pointStyles = createMonthPointStyles(dataset.data || [], selectedMonth, dataset.borderColor, dataset.borderColor);
+                    return Object.assign({}, dataset, {
+                        pointRadius: pointStyles.radius,
+                        pointBackgroundColor: pointStyles.backgroundColor
+                    });
+                });
+                chart.options.scales.y = yScale;
+                chart.update();
+            } else {
+                const ctx = canvas.getContext("2d");
+                if (!ctx) return;
+                chart = registerChart(new Chart(ctx, {
+                    type: "line",
+                    data: {
+                        labels: displayLabels,
+                        datasets: (payload.datasets || []).map(function (dataset) {
+                            const pointStyles = createMonthPointStyles(dataset.data || [], selectedMonth, dataset.borderColor, dataset.borderColor);
+                            return Object.assign({}, dataset, {
+                                pointRadius: pointStyles.radius,
+                                pointBackgroundColor: pointStyles.backgroundColor
+                            });
+                        })
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { display: true },
+                            tooltip: {
+                                callbacks: {
+                                    title: function (items) {
+                                        if (!items || !items.length) return "";
+                                        const item = items[0];
+                                        const monthLabel = payload.labels[item.dataIndex] || item.label || "";
+                                        return `${monthLabel} ${payload.year}`;
+                                    }
+                                }
+                            }
+                        },
+                        scales: {
+                            x: {
+                                ticks: { autoSkip: true, maxTicksLimit: 12 }
+                            },
+                            y: yScale
+                        }
+                    }
+                }));
+            }
+
+            setStatus("");
+            updateComparisonChart();
+        }
+
+        function updateComparisonChart() {
+            const rows = getRows();
+            const selectedYear = comparisonYearSelect.value;
+            const compareYear = compareYearSelect.value;
+
+            if (!selectedYear || !compareYear) {
+                compareWrap.hidden = true;
+                if (compareChart) {
+                    compareChart.destroy();
+                    compareChart = null;
+                }
+                return;
+            }
+
+            const payload = buildDashboardGroupedMetricComparison(
+                rows,
+                selectedYear,
+                compareYear,
+                config.selectionKey,
+                typeSelect ? typeSelect.value || "all" : "all",
+                config.aggregateMode
+            );
+
+            if (!payload) {
+                compareWrap.hidden = true;
+                if (compareChart) {
+                    compareChart.destroy();
+                    compareChart = null;
+                }
+                return;
+            }
+
+            compareWrap.hidden = false;
+            const selectedMonth = selectedMonthNumber();
+            const yScale = Object.assign({}, getScaleBounds(collectDashboardDatasetValues(payload.datasets), { beginAtZero: true, minPadding: 1, paddingRatio: 0.12 }), {
+                title: { display: true, text: config.metricLabel }
+            });
+
+            if (compareChart) {
+                compareChart.data.labels = payload.labels.map(toShortMonthLabel);
+                compareChart.data.datasets = (payload.datasets || []).map(function (dataset) {
+                    const styles = createMonthPointStyles(dataset.data || [], selectedMonth, dataset.borderColor, dataset.borderColor);
+                    return Object.assign({}, dataset, {
+                        pointRadius: styles.radius,
+                        pointBackgroundColor: styles.backgroundColor
+                    });
+                });
+                compareChart.options.scales.y = yScale;
+                compareChart.update();
+                return;
+            }
+
+            const ctx = compareCanvas.getContext("2d");
+            if (!ctx) return;
+            compareChart = registerChart(new Chart(ctx, {
+                type: "bar",
+                data: {
+                    labels: payload.labels.map(toShortMonthLabel),
+                    datasets: (payload.datasets || []).map(function (dataset) {
+                        const styles = createMonthPointStyles(dataset.data || [], selectedMonth, dataset.borderColor, dataset.borderColor);
+                        return Object.assign({}, dataset, {
+                            pointRadius: styles.radius,
+                            pointBackgroundColor: styles.backgroundColor,
+                            borderWidth: 1,
+                            borderSkipped: false
+                        });
+                    })
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: true }
+                    },
+                    scales: {
+                        x: {
+                            stacked: false,
+                            ticks: {
+                                autoSkip: true,
+                                maxTicksLimit: 12
+                            }
+                        },
+                        y: Object.assign({}, yScale, { stacked: false })
+                    }
+                }
+            }));
+        }
+
+        function loadYears() {
+            const rows = getRows();
+            const years = getDashboardGroupedMetricYears(rows);
+            populateYearOptions(years);
+            populateTypeOptions(rows);
+            populateMonthOptions();
+            updateMainChart();
+        }
+
+        yearSelect.addEventListener("change", updateMainChart);
+        monthSelect.addEventListener("change", updateMainChart);
+        if (typeSelect) {
+            typeSelect.addEventListener("change", updateMainChart);
+        }
+        comparisonYearSelect.addEventListener("change", updateComparisonChart);
+        compareYearSelect.addEventListener("change", updateComparisonChart);
+
+        window[config.refreshYearsFnName] = loadYears;
+        loadYears();
     }
 
     function getDashboardMetricYears(metrics, keys) {
@@ -5778,6 +6460,48 @@
 
         window.refreshDashboardMetricsCharts = refresh;
         refresh();
+    }
+
+    function initConsumersEnergyChart() {
+        initDashboardGroupedMetricChart({
+            metricKey: "consumers_energy_consumption",
+            metricLabel: "Energy Consumption (kWh)",
+            selectionKey: "consumer_type",
+            allSelectionLabel: "All types",
+            aggregateMode: "sum",
+            baseBorderColor: "#16a34a",
+            basePointColor: "#16a34a",
+            yearSelectId: "consumersYearSelect",
+            monthSelectId: "consumersMonthSelect",
+            comparisonYearSelectId: "consumersComparisonYearSelect",
+            compareYearSelectId: "consumersCompareYearSelect",
+            compareWrapId: "consumersCompareWrap",
+            canvasId: "consumersEnergyChart",
+            compareCanvasId: "consumersCompareChart",
+            statusId: "consumersChartStatus",
+            refreshYearsFnName: "refreshConsumersYears"
+        });
+    }
+
+    function initPowerRateChart() {
+        initDashboardGroupedMetricChart({
+            metricKey: "power_rate",
+            metricLabel: "Power Rate",
+            selectionKey: "label",
+            allSelectionLabel: "All rates",
+            aggregateMode: "average",
+            baseBorderColor: "#7c3aed",
+            basePointColor: "#7c3aed",
+            yearSelectId: "powerRateYearSelect",
+            monthSelectId: "powerRateMonthSelect",
+            comparisonYearSelectId: "powerRateComparisonYearSelect",
+            compareYearSelectId: "powerRateCompareYearSelect",
+            compareWrapId: "powerRateCompareWrap",
+            canvasId: "powerRateChart",
+            compareCanvasId: "powerRateCompareChart",
+            statusId: "powerRateChartStatus",
+            refreshYearsFnName: "refreshPowerRateYears"
+        });
     }
 
     window.refreshDashboardMetrics = function () {
@@ -6382,6 +7106,8 @@
         initHourlyUploadChart();
         initSystemLossCharts();
         initSalesChart();
+        initConsumersEnergyChart();
+        initPowerRateChart();
         initPeakLoadChart();
         initHourlyDayChart();
         initHourlyDayKwChart();
