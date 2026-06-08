@@ -407,7 +407,7 @@
                     <div class="uploaded-data-head comparison-head">
                         <div>
                             <h3>Consumers Energy Comparison</h3>
-                            <p class="upload-help">Compare two years from the latest Dashboard Metrics upload.</p>
+                            <p class="upload-help">Compare two years from the latest Dashboard Metrics upload. Pick a consumer type to compare.</p>
                         </div>
                         <div class="upload-filter">
                             <label for="consumersComparisonYearSelect">Year</label>
@@ -417,6 +417,10 @@
                             <label for="consumersCompareYearSelect">Compare Year</label>
                             <select id="consumersCompareYearSelect">
                                 <option value="">None</option>
+                            </select>
+                            <label for="consumersCompareTypeSelect">Consumer Type</label>
+                            <select id="consumersCompareTypeSelect">
+                                <option value="all">All types</option>
                             </select>
                         </div>
                     </div>
@@ -585,6 +589,12 @@
                                     <option value="all">All months</option>
                                 </select>
                             </div>
+                            <div class="upload-filter">
+                                <label for="powerRateGridSelect">Grid</label>
+                                <select id="powerRateGridSelect">
+                                    <option value="all">All grids</option>
+                                </select>
+                            </div>
                         </div>
                         <div class="upload-chart-status" id="powerRateChartStatus"></div>
                         <canvas id="powerRateChart"></canvas>
@@ -592,7 +602,7 @@
                     <div class="uploaded-data-head comparison-head">
                         <div>
                             <h3>Power Rate Comparison</h3>
-                            <p class="upload-help">Compare two years from the latest Dashboard Metrics upload.</p>
+                            <p class="upload-help">Compare two years from the latest Dashboard Metrics upload. Pick a grid to compare.</p>
                         </div>
                         <div class="upload-filter">
                             <label for="powerRateComparisonYearSelect">Year</label>
@@ -602,6 +612,10 @@
                             <label for="powerRateCompareYearSelect">Compare Year</label>
                             <select id="powerRateCompareYearSelect">
                                 <option value="">None</option>
+                            </select>
+                            <label for="powerRateCompareGridSelect">Grid</label>
+                            <select id="powerRateCompareGridSelect">
+                                <option value="all">All grids</option>
                             </select>
                         </div>
                     </div>

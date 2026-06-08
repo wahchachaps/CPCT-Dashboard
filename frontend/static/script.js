@@ -5583,25 +5583,33 @@
         return Math.abs(hash);
     }
 
-    function getDashboardSeriesStyle(label, variant) {
+    function getDashboardSeriesStyle(label) {
         const palette = getDashboardMetricPalette();
         const color = palette[hashDashboardText(label) % palette.length];
-        if (variant === "compare") {
-            return {
-                borderColor: color.border,
-                backgroundColor: color.background,
-                borderDash: [6, 4]
-            };
-        }
         return {
             borderColor: color.border,
             backgroundColor: color.background
         };
     }
 
-    function createDashboardSeriesCollection(rows, year, selectionKey, selectionValue, mode) {
+    function createDashboardSeriesCollection(rows, year, selectionKey, selectionValue, mode, options) {
+        const config = options || {};
         const months = getDashboardMonthNames();
-        const filteredRows = getDashboardGroupedMetricRowsForSelection(rows, year, selectionKey, selectionValue);
+        let filteredRows = getDashboardGroupedMetricRowsForSelection(rows, year, selectionKey, selectionValue);
+        if (typeof config.rowFilterFn === "function") {
+            filteredRows = filteredRows.filter(function (row) {
+                return !!config.rowFilterFn(row);
+            });
+        }
+        if (config.rowFilterKey) {
+            filteredRows = filteredRows.filter(function (row) {
+                const rowValue = String(row && row[config.rowFilterKey] ? row[config.rowFilterKey] : "").trim();
+                if (!config.rowFilterValue || config.rowFilterValue === "all") {
+                    return !!rowValue;
+                }
+                return rowValue.toLowerCase() === String(config.rowFilterValue).trim().toLowerCase();
+            });
+        }
         if (!filteredRows.length) {
             return [];
         }
@@ -5609,7 +5617,9 @@
         const seriesOrder = [];
         const seriesMap = {};
         filteredRows.forEach(function (row) {
-            const label = getDashboardGroupedMetricLabel(row, selectionKey);
+            const label = config.seriesLabelFn
+                ? config.seriesLabelFn(row, selectionKey, selectionValue)
+                : getDashboardGroupedMetricLabel(row, selectionKey);
             if (!label) return;
             if (!seriesMap[label]) {
                 seriesMap[label] = {
@@ -5647,8 +5657,8 @@
         });
     }
 
-    function buildDashboardGroupedMetricPayload(rows, year, selectionKey, selectionValue, mode) {
-        const series = createDashboardSeriesCollection(rows, year, selectionKey, selectionValue, mode);
+    function buildDashboardGroupedMetricPayload(rows, year, selectionKey, selectionValue, mode, options) {
+        const series = createDashboardSeriesCollection(rows, year, selectionKey, selectionValue, mode, options);
         if (!series.length) {
             return null;
         }
@@ -5657,7 +5667,7 @@
             selection: selectionValue || "all",
             labels: getDashboardMonthNames(),
             datasets: series.map(function (item) {
-                const style = getDashboardSeriesStyle(item.label, "main");
+                const style = getDashboardSeriesStyle(item.label);
                 return {
                     label: item.label,
                     data: item.values,
@@ -5675,9 +5685,9 @@
         };
     }
 
-    function buildDashboardGroupedMetricComparison(rows, selectedYear, compareYear, selectionKey, selectionValue, mode) {
-        const leftSeries = createDashboardSeriesCollection(rows, selectedYear, selectionKey, selectionValue, mode);
-        const rightSeries = createDashboardSeriesCollection(rows, compareYear, selectionKey, selectionValue, mode);
+    function buildDashboardGroupedMetricComparison(rows, selectedYear, compareYear, selectionKey, selectionValue, mode, options) {
+        const leftSeries = createDashboardSeriesCollection(rows, selectedYear, selectionKey, selectionValue, mode, options);
+        const rightSeries = createDashboardSeriesCollection(rows, compareYear, selectionKey, selectionValue, mode, options);
         if (!leftSeries.length && !rightSeries.length) {
             return null;
         }
@@ -5707,8 +5717,8 @@
         seriesLabels.forEach(function (label) {
             const left = leftMap[label];
             const right = rightMap[label];
-            const mainStyle = getDashboardSeriesStyle(label, "main");
-            const compareStyle = getDashboardSeriesStyle(label, "compare");
+            const mainStyle = getDashboardSeriesStyle(label);
+            const compareStyle = getDashboardSeriesStyle(label);
 
             if (left) {
                 datasets.push({
@@ -5729,7 +5739,7 @@
                     label: `${label} (${compareYear})`,
                     data: right.values,
                     borderColor: compareStyle.borderColor,
-                    backgroundColor: compareStyle.backgroundColor,
+                    backgroundColor: compareStyle.borderColor,
                     pointBackgroundColor: compareStyle.borderColor,
                     pointRadius: 4,
                     pointHoverRadius: 8,
@@ -5798,6 +5808,8 @@
         const yearSelect = document.getElementById(config.yearSelectId);
         const monthSelect = document.getElementById(config.monthSelectId);
         const typeSelect = config.typeSelectId ? document.getElementById(config.typeSelectId) : null;
+        const gridSelect = config.gridSelectId ? document.getElementById(config.gridSelectId) : null;
+        const compareSelect = config.compareSelectId ? document.getElementById(config.compareSelectId) : null;
         const comparisonYearSelect = document.getElementById(config.comparisonYearSelectId);
         const compareYearSelect = document.getElementById(config.compareYearSelectId);
         const compareWrap = document.getElementById(config.compareWrapId);
@@ -5831,6 +5843,16 @@
             return getDashboardGroupedMetricRows(config.metricKey);
         }
 
+        function getGridValue() {
+            if (!gridSelect) return "all";
+            return String(gridSelect.value || "all").trim() || "all";
+        }
+
+        function getCompareValue() {
+            if (!compareSelect) return "all";
+            return String(compareSelect.value || "all").trim() || "all";
+        }
+
         function populateYearOptions(years) {
             const previousYear = yearSelect.value || "";
             const previousComparisonYear = comparisonYearSelect.value || "";
@@ -5855,6 +5877,15 @@
                 comparisonOption.value = "";
                 comparisonOption.textContent = "No years available";
                 comparisonYearSelect.appendChild(comparisonOption);
+
+                if (compareSelect) {
+                    compareSelect.innerHTML = "";
+                    const compareOption = document.createElement("option");
+                    compareOption.value = "all";
+                    compareOption.textContent = config.allCompareLabel || "All";
+                    compareSelect.appendChild(compareOption);
+                    compareSelect.disabled = true;
+                }
 
                 yearSelect.disabled = true;
                 comparisonYearSelect.disabled = true;
@@ -5920,6 +5951,149 @@
             typeSelect.disabled = typeSelect.options.length <= 1;
         }
 
+        function populateGridOptions(rows) {
+            if (!gridSelect) {
+                return;
+            }
+            const previous = gridSelect.value || "all";
+            const gridValues = [];
+            (rows || []).forEach(function (row) {
+                const value = String(row && row[config.gridKey] ? row[config.gridKey] : "").trim();
+                if (!value || gridValues.indexOf(value) !== -1) return;
+                gridValues.push(value);
+            });
+
+            gridSelect.innerHTML = "";
+
+            const allOption = document.createElement("option");
+            allOption.value = "all";
+            allOption.textContent = config.allGridLabel || "All grids";
+            gridSelect.appendChild(allOption);
+
+            gridValues.forEach(function (value) {
+                const option = document.createElement("option");
+                option.value = value;
+                option.textContent = value;
+                gridSelect.appendChild(option);
+            });
+
+            const available = Array.from(gridSelect.options).map(function (option) {
+                return option.value;
+            });
+            gridSelect.value = available.indexOf(previous) !== -1 ? previous : "all";
+            gridSelect.disabled = gridSelect.options.length <= 1;
+        }
+
+        function populateCompareOptions(rows) {
+            if (!compareSelect) {
+                return;
+            }
+
+            const previous = compareSelect.value || "all";
+            const values = [];
+            const seenValues = new Set();
+            const seenGrids = new Set();
+            const mainGridValue = config.gridKey ? getGridValue() : "all";
+            (rows || []).forEach(function (row) {
+                if (config.compareSelectKind === "grid" && config.gridKey && mainGridValue && mainGridValue !== "all") {
+                    const rowGrid = String(row && row[config.gridKey] ? row[config.gridKey] : "").trim();
+                    if (rowGrid.toLowerCase() !== mainGridValue.toLowerCase()) {
+                        return;
+                    }
+                }
+                let value = "";
+                if (config.compareSelectKind === "grid") {
+                    const gridValue = String(row && row[config.gridKey] ? row[config.gridKey] : "").trim();
+                    const consumerType = String(row && row.consumer_type ? row.consumer_type : "").trim();
+                    if (gridValue && !seenGrids.has(gridValue)) {
+                        if (!seenValues.has(gridValue)) {
+                            values.push(gridValue);
+                            seenValues.add(gridValue);
+                        }
+                        seenGrids.add(gridValue);
+                    }
+                    value = `${gridValue}||${consumerType}`;
+                } else if (config.compareSelectKind === "selection") {
+                    value = getDashboardGroupedMetricLabel(row, config.selectionKey);
+                } else if (typeof config.compareSelectValueFn === "function") {
+                    value = String(config.compareSelectValueFn(row) || "").trim();
+                }
+                if (!value || seenValues.has(value)) return;
+                values.push(value);
+                seenValues.add(value);
+            });
+
+            compareSelect.innerHTML = "";
+
+            const allOption = document.createElement("option");
+            allOption.value = "all";
+            allOption.textContent = config.allCompareLabel || "All";
+            compareSelect.appendChild(allOption);
+
+            values.forEach(function (value) {
+                const option = document.createElement("option");
+                if (config.compareSelectKind === "grid") {
+                    const parts = value.split("||");
+                    const gridValue = parts[0] || "";
+                    const consumerType = parts[1] || "";
+                    option.value = value;
+                    option.textContent = consumerType ? `${gridValue} / ${consumerType}` : gridValue;
+                } else {
+                    option.value = value;
+                    option.textContent = value;
+                }
+                compareSelect.appendChild(option);
+            });
+
+            const available = Array.from(compareSelect.options).map(function (option) {
+                return option.value;
+            });
+            compareSelect.value = available.indexOf(previous) !== -1 ? previous : "all";
+            compareSelect.disabled = compareSelect.options.length <= 1;
+        }
+
+        function getCompareRowFilter() {
+            if (!compareSelect || !config.compareSelectKind) {
+                return null;
+            }
+            const selected = String(compareSelect.value || "all").trim();
+            if (!selected || selected === "all") {
+                return null;
+            }
+            if (config.compareSelectKind === "grid") {
+                const parts = selected.split("||");
+                const gridValue = parts[0] || "";
+                const consumerType = parts[1] || "";
+                if (!consumerType) {
+                    return {
+                        rowFilterFn: function (row) {
+                            const rowGrid = String(row && row[config.gridKey] ? row[config.gridKey] : "").trim();
+                            return rowGrid.toLowerCase() === gridValue.toLowerCase();
+                        }
+                    };
+                }
+                return {
+                    rowFilterFn: function (row) {
+                        const rowGrid = String(row && row[config.gridKey] ? row[config.gridKey] : "").trim();
+                        const rowType = getDashboardGroupedMetricLabel(row, config.selectionKey);
+                        return rowGrid.toLowerCase() === gridValue.toLowerCase() && rowType.toLowerCase() === consumerType.toLowerCase();
+                    },
+                    seriesLabelFn: function (row, selectionKey) {
+                        const rowGrid = String(row && row[config.gridKey] ? row[config.gridKey] : "").trim();
+                        const rowType = getDashboardGroupedMetricLabel(row, selectionKey);
+                        return `${rowGrid} ${rowType}`;
+                    }
+                };
+            }
+            if (config.compareSelectKind === "selection") {
+                return {
+                    rowFilterKey: config.selectionKey,
+                    rowFilterValue: selected
+                };
+            }
+            return null;
+        }
+
         function populateMonthOptions() {
             const previous = monthSelect.value || "all";
             monthSelect.innerHTML = "";
@@ -5955,7 +6129,27 @@
                 year,
                 config.selectionKey,
                 typeSelect ? typeSelect.value || "all" : "all",
-                config.aggregateMode
+                config.aggregateMode,
+                config.payloadOptions ? config.payloadOptions() : null
+            );
+        }
+
+        function buildComparisonPayload() {
+            const rows = getRows();
+            const selectedYear = comparisonYearSelect.value;
+            const compareYear = compareYearSelect.value;
+            if (!selectedYear || !compareYear) return null;
+            const compareOptions = config.comparisonPayloadOptions ? config.comparisonPayloadOptions() : null;
+            const compareRowFilter = getCompareRowFilter();
+            const mergedCompareOptions = Object.assign({}, compareOptions || {}, compareRowFilter || {});
+            return buildDashboardGroupedMetricComparison(
+                rows,
+                selectedYear,
+                compareYear,
+                config.selectionKey,
+                typeSelect ? typeSelect.value || "all" : "all",
+                config.aggregateMode,
+                mergedCompareOptions
             );
         }
 
@@ -6049,14 +6243,7 @@
                 return;
             }
 
-            const payload = buildDashboardGroupedMetricComparison(
-                rows,
-                selectedYear,
-                compareYear,
-                config.selectionKey,
-                typeSelect ? typeSelect.value || "all" : "all",
-                config.aggregateMode
-            );
+            const payload = buildComparisonPayload();
 
             if (!payload) {
                 compareWrap.hidden = true;
@@ -6079,7 +6266,9 @@
                     const styles = createMonthPointStyles(dataset.data || [], selectedMonth, dataset.borderColor, dataset.borderColor);
                     return Object.assign({}, dataset, {
                         pointRadius: styles.radius,
-                        pointBackgroundColor: styles.backgroundColor
+                        pointBackgroundColor: styles.backgroundColor,
+                        backgroundColor: dataset.borderColor,
+                        borderColor: dataset.borderColor
                     });
                 });
                 compareChart.options.scales.y = yScale;
@@ -6093,16 +6282,18 @@
                 type: "bar",
                 data: {
                     labels: payload.labels.map(toShortMonthLabel),
-                    datasets: (payload.datasets || []).map(function (dataset) {
-                        const styles = createMonthPointStyles(dataset.data || [], selectedMonth, dataset.borderColor, dataset.borderColor);
-                        return Object.assign({}, dataset, {
-                            pointRadius: styles.radius,
-                            pointBackgroundColor: styles.backgroundColor,
-                            borderWidth: 1,
-                            borderSkipped: false
-                        });
-                    })
-                },
+                datasets: (payload.datasets || []).map(function (dataset) {
+                    const styles = createMonthPointStyles(dataset.data || [], selectedMonth, dataset.borderColor, dataset.borderColor);
+                    return Object.assign({}, dataset, {
+                        pointRadius: styles.radius,
+                        pointBackgroundColor: styles.backgroundColor,
+                        backgroundColor: dataset.borderColor,
+                        borderColor: dataset.borderColor,
+                        borderWidth: 1,
+                        borderSkipped: false
+                    });
+                })
+            },
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
@@ -6128,6 +6319,8 @@
             const years = getDashboardGroupedMetricYears(rows);
             populateYearOptions(years);
             populateTypeOptions(rows);
+            populateGridOptions(rows);
+            populateCompareOptions(rows);
             populateMonthOptions();
             updateMainChart();
         }
@@ -6136,6 +6329,12 @@
         monthSelect.addEventListener("change", updateMainChart);
         if (typeSelect) {
             typeSelect.addEventListener("change", updateMainChart);
+        }
+        if (gridSelect) {
+            gridSelect.addEventListener("change", updateMainChart);
+        }
+        if (compareSelect) {
+            compareSelect.addEventListener("change", updateComparisonChart);
         }
         comparisonYearSelect.addEventListener("change", updateComparisonChart);
         compareYearSelect.addEventListener("change", updateComparisonChart);
@@ -6473,13 +6672,24 @@
             basePointColor: "#16a34a",
             yearSelectId: "consumersYearSelect",
             monthSelectId: "consumersMonthSelect",
+            compareSelectId: "consumersCompareTypeSelect",
+            compareSelectKind: "selection",
+            allCompareLabel: "All types",
             comparisonYearSelectId: "consumersComparisonYearSelect",
             compareYearSelectId: "consumersCompareYearSelect",
             compareWrapId: "consumersCompareWrap",
             canvasId: "consumersEnergyChart",
             compareCanvasId: "consumersCompareChart",
             statusId: "consumersChartStatus",
-            refreshYearsFnName: "refreshConsumersYears"
+            refreshYearsFnName: "refreshConsumersYears",
+            comparisonPayloadOptions: function () {
+                const compareSelect = document.getElementById("consumersCompareTypeSelect");
+                const compareValue = compareSelect ? String(compareSelect.value || "all").trim() || "all" : "all";
+                return {
+                    rowFilterKey: "consumer_type",
+                    rowFilterValue: compareValue
+                };
+            }
         });
     }
 
@@ -6487,20 +6697,57 @@
         initDashboardGroupedMetricChart({
             metricKey: "power_rate",
             metricLabel: "Power Rate",
-            selectionKey: "label",
-            allSelectionLabel: "All rates",
+            selectionKey: "consumer_type",
+            gridKey: "grid",
+            allGridLabel: "All grids",
             aggregateMode: "average",
             baseBorderColor: "#7c3aed",
             basePointColor: "#7c3aed",
             yearSelectId: "powerRateYearSelect",
             monthSelectId: "powerRateMonthSelect",
+            gridSelectId: "powerRateGridSelect",
+            compareSelectId: "powerRateCompareGridSelect",
+            compareSelectKind: "grid",
+            allCompareLabel: "All grids",
             comparisonYearSelectId: "powerRateComparisonYearSelect",
             compareYearSelectId: "powerRateCompareYearSelect",
             compareWrapId: "powerRateCompareWrap",
             canvasId: "powerRateChart",
             compareCanvasId: "powerRateCompareChart",
             statusId: "powerRateChartStatus",
-            refreshYearsFnName: "refreshPowerRateYears"
+            refreshYearsFnName: "refreshPowerRateYears",
+            payloadOptions: function () {
+                const gridSelect = document.getElementById("powerRateGridSelect");
+                const gridValue = gridSelect ? String(gridSelect.value || "all").trim() || "all" : "all";
+                return {
+                    rowFilterKey: "grid",
+                    rowFilterValue: gridValue,
+                    seriesLabelFn: function (row, selectionKey, selectionValue) {
+                        const consumerType = getDashboardGroupedMetricLabel(row, selectionKey);
+                        const gridName = String(row && row.grid ? row.grid : "").trim();
+                        if (!gridName) {
+                            return consumerType;
+                        }
+                        return `${gridName} ${consumerType}`;
+                    }
+                };
+            },
+            comparisonPayloadOptions: function () {
+                const gridSelect = document.getElementById("powerRateGridSelect");
+                const gridValue = gridSelect ? String(gridSelect.value || "all").trim() || "all" : "all";
+                return {
+                    rowFilterKey: "grid",
+                    rowFilterValue: gridValue,
+                    seriesLabelFn: function (row, selectionKey, selectionValue) {
+                        const consumerType = getDashboardGroupedMetricLabel(row, selectionKey);
+                        const gridName = String(row && row.grid ? row.grid : "").trim();
+                        if (!gridName) {
+                            return consumerType;
+                        }
+                        return `${gridName} ${consumerType}`;
+                    }
+                };
+            }
         });
     }
 
