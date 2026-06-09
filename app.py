@@ -93,6 +93,7 @@ MONTH_NAMES = [
     "January", "February", "March", "April", "May", "June",
     "July", "August", "September", "October", "November", "December"
 ]
+MONTH_NAME_TO_NUMBER = {name.lower(): index + 1 for index, name in enumerate(MONTH_NAMES)}
 FACT_SHEET_DEFAULT_ROWS = [
     ("Date Organized", "09 August 1972"),
     ("Classification", "Mega Large"),
@@ -730,6 +731,9 @@ def build_upload_groups(entries):
         original = item.get("original_name", "")
         item["display_name"] = os.path.splitext(original)[0] if original else item.get("stored_name", "")
         item["uploaded_at_display"] = format_timestamp(item.get("uploaded_at", ""))
+        year, month = get_entry_year_month(item)
+        item["year"] = year
+        item["month"] = month
         enriched.append(item)
 
     groups = {}
@@ -761,6 +765,9 @@ def build_recent_uploads(entries, limit=4):
         original = item.get("original_name", "")
         item["display_name"] = os.path.splitext(original)[0] if original else item.get("stored_name", "")
         item["uploaded_at_display"] = format_timestamp(item.get("uploaded_at", ""))
+        year, month = get_entry_year_month(item)
+        item["year"] = year
+        item["month"] = month
         enriched.append(item)
     enriched.sort(key=lambda item: item.get("uploaded_at", ""), reverse=True)
     return enriched[:limit]
@@ -1703,18 +1710,159 @@ def find_energization_table_columns(df):
 
             if municipality_col is None and "municipality" in compact:
                 municipality_col = idx
-            if households_col is None and "projected potential" in compact and "no. of hhs" in compact:
-                households_col = idx
-            if households_col is None and "[a]" in compact and ("potential" in compact or "no. of hhs" in compact):
-                households_col = idx
             if energized_col is None and "energized hh" in compact:
                 energized_col = idx
             if energized_col is None and "[b]" in compact and "energized" in compact:
                 energized_col = idx
 
-        if municipality_col is not None and households_col is not None and energized_col is not None:
+        if municipality_col is not None and energized_col is not None:
             return row_idx, municipality_col, households_col, energized_col
     return None, None, None, None
+
+
+def normalize_sheet_label(value):
+    text = str(value or "").strip().lower()
+    text = re.sub(r"[_-]+", " ", text)
+    text = re.sub(r"\s+", " ", text)
+    return text
+
+
+def find_energization_hh_sheet(sheet_names):
+    aliases = {
+        "energization (hh)",
+        "energized (hh)",
+        "energization hh",
+        "energized hh",
+    }
+    for name in sheet_names or []:
+        if normalize_sheet_label(name) in aliases:
+            return name
+    return None
+
+
+def get_latest_month_from_rows(rows):
+    latest = None
+    for row in rows or []:
+        try:
+            year = int(row.get("year"))
+        except (TypeError, ValueError):
+            continue
+        data = row.get("data") or {}
+        for month_name in MONTH_NAMES:
+            if parse_numeric_cell(data.get(month_name)) is None:
+                continue
+            month_num = MONTH_NAME_TO_NUMBER.get(month_name.lower())
+            if not month_num:
+                continue
+            candidate = (year, month_num)
+            if latest is None or candidate > latest:
+                latest = candidate
+    return latest
+
+
+def get_latest_period_from_dashboard_metrics(metrics, metric_keys):
+    latest = None
+    for metric_key in metric_keys or []:
+        metric = (metrics or {}).get(metric_key) or {}
+        candidate = get_latest_month_from_rows(metric.get("data") or [])
+        if candidate and (latest is None or candidate > latest):
+            latest = candidate
+    return latest
+
+
+def get_dashboard_metric_periods(metrics, metric_keys):
+    periods = set()
+    for metric_key in metric_keys or []:
+        metric = (metrics or {}).get(metric_key) or {}
+        for row in metric.get("data") or []:
+            try:
+                year = int(row.get("year"))
+            except (TypeError, ValueError):
+                continue
+            data = row.get("data") or {}
+            for month_name in MONTH_NAMES:
+                if parse_numeric_cell(data.get(month_name)) is None:
+                    continue
+                month_num = MONTH_NAME_TO_NUMBER.get(month_name.lower())
+                if month_num:
+                    periods.add((year, month_num))
+    return sorted(periods, reverse=True)
+
+
+def get_energization_period_from_entry(entry):
+    year, month = get_entry_year_month(entry)
+    if year and month:
+        return year, month
+
+    if get_entry_category(entry) == "dashboard_metrics":
+        data = get_entry_data(entry)
+        metrics = data.get("dashboard_metrics") or {}
+        latest = get_latest_period_from_dashboard_metrics(metrics, ("energization", "energization_hh"))
+        if latest:
+            return latest
+
+    return year, month
+
+
+def get_dashboard_metric_value(metric, year, month_name):
+    if not metric:
+        return None
+    for row in metric.get("data") or []:
+        try:
+            row_year = int(row.get("year"))
+        except (TypeError, ValueError):
+            continue
+        if row_year != int(year):
+            continue
+        value = parse_numeric_cell((row.get("data") or {}).get(month_name))
+        if value is not None:
+            return value
+    return None
+
+
+def get_month_name(month_number):
+    try:
+        month_number = int(month_number)
+    except (TypeError, ValueError):
+        return ""
+    if 1 <= month_number <= 12:
+        return MONTH_NAMES[month_number - 1]
+    return ""
+
+
+def parse_energization_selection_id(value):
+    text = str(value or "").strip()
+    if not text:
+        return None, None, None
+    parts = text.split(":")
+    if len(parts) == 3:
+        upload_id, year_raw, month_raw = parts
+        try:
+            return upload_id, int(year_raw), int(month_raw)
+        except (TypeError, ValueError):
+            return upload_id, None, None
+    return text, None, None
+
+
+def infer_upload_period(category, data_json, original_name="", fallback_year=None, fallback_month=None):
+    year = fallback_year
+    month = fallback_month
+
+    if not year or not month:
+        parsed_year, parsed_month = parse_year_month(original_name)
+        year = year or parsed_year
+        month = month or parsed_month
+
+    if year and month:
+        return year, month
+
+    if category == "dashboard_metrics":
+        metrics = (data_json or {}).get("dashboard_metrics") or {}
+        latest = get_latest_period_from_dashboard_metrics(metrics, ("energization", "energization_hh"))
+        if latest:
+            return latest
+
+    return year, month
 
 
 def find_energization_data_table(xl):
@@ -1739,6 +1887,153 @@ def find_energization_data_table(xl):
     return None, None, None, None, None, None
 
 
+def build_energization_map_from_percent_metric(latest_metrics_entry):
+    return build_energization_map_from_percent_metric_for_period(latest_metrics_entry)
+
+
+def build_energization_map_from_percent_metric_for_period(latest_metrics_entry, target_year=None, target_month=None):
+    """Convert dashboard metrics energization sheets to map format for a specific period."""
+    data = get_entry_data(latest_metrics_entry)
+    metrics = data.get("dashboard_metrics") or {}
+    energization_metric = metrics.get("energization")
+    energized_hh_metric = metrics.get("energization_hh")
+    if not energization_metric:
+        return None
+
+    pct_rows = energization_metric.get("data") or []
+    hh_rows = (energized_hh_metric.get("data") or []) if energized_hh_metric else []
+    if not pct_rows:
+        return None
+
+    if target_year is None or target_month is None:
+        latest_period = get_latest_period_from_dashboard_metrics(metrics, ("energization", "energization_hh"))
+        if not latest_period:
+            return None
+        target_year, target_month = latest_period
+
+    try:
+        target_year = int(target_year)
+        target_month = int(target_month)
+    except (TypeError, ValueError):
+        return None
+
+    target_month_name = get_month_name(target_month)
+    if not target_month_name:
+        return None
+
+    location_index = get_energization_location_index()
+    pct_lookup = {}
+    for row in pct_rows:
+        try:
+            year = int(row.get("year"))
+        except (TypeError, ValueError):
+            continue
+        municipality = normalize_map_location_name(row.get("municipality"))
+        if municipality:
+            pct_lookup[(municipality, year)] = row
+
+    hh_lookup = {}
+    for hh_row in hh_rows:
+        try:
+            year = int(hh_row.get("year"))
+        except (TypeError, ValueError):
+            continue
+        municipality = normalize_map_location_name(hh_row.get("municipality"))
+        if not municipality:
+            continue
+        hh_lookup[(municipality, year)] = hh_row
+
+    muni_data = {}
+    for location in ENERGIZATION_MAP_LOCATIONS:
+        normalized = normalize_map_location_name(location.get("name"))
+        info = location_index.get(normalized)
+        if not info:
+            continue
+
+        pct_row = pct_lookup.get((normalized, target_year))
+        hh_row = hh_lookup.get((normalized, target_year))
+        if not pct_row:
+            continue
+
+        pct_value_raw = parse_numeric_cell((pct_row.get("data") or {}).get(target_month_name))
+        if pct_value_raw is None:
+            continue
+        pct_value = round(float(pct_value_raw) * 100.0, 2)
+
+        energized_value = None
+        households_value = None
+        unenergized_value = None
+        if hh_row:
+            energized_value = parse_numeric_cell((hh_row.get("data") or {}).get(target_month_name))
+            households_value = parse_numeric_cell((hh_row.get("households_data") or {}).get(target_month_name))
+            unenergized_value = parse_numeric_cell((hh_row.get("unenergized_data") or {}).get(target_month_name))
+
+        if households_value is None and energized_value is not None and pct_value_raw not in (None, 0):
+            households_value = energized_value / float(pct_value_raw)
+        if energized_value is None and households_value is not None:
+            energized_value = households_value * float(pct_value_raw or 0)
+        if unenergized_value is None and households_value is not None and energized_value is not None:
+            unenergized_value = max(households_value - energized_value, 0)
+
+        if households_value is None and energized_value is None:
+            continue
+
+        households_value = float(households_value or energized_value or 0)
+        energized_value = float(energized_value or 0)
+        unenergized_value = float(unenergized_value if unenergized_value is not None else max(households_value - energized_value, 0))
+
+        key = info["key"]
+        muni_data[key] = {
+            "name": info["name"],
+            "type": info["type"],
+            "branch": info["branch"],
+            "households": int(round(households_value)),
+            "energized_households": int(round(energized_value)),
+            "unenergized_households": int(round(unenergized_value)),
+            "electrification_percent": pct_value,
+            "hh_electrification_level": pct_value,
+            "level": classify_energization_level(pct_value),
+            "year": target_year,
+            "month": target_month,
+            "month_label": target_month_name,
+        }
+
+    if not muni_data:
+        return None
+
+    locations = []
+    total_households = 0.0
+    total_energized = 0.0
+    for location in ENERGIZATION_MAP_LOCATIONS:
+        key = normalize_map_location_name(location.get("name"))
+        bucket = muni_data.get(key)
+        if not bucket:
+            continue
+        hh_val = bucket.get("households", 0)
+        energized_val = bucket.get("energized_households", 0)
+        total_households += hh_val
+        total_energized += energized_val
+        locations.append(bucket)
+
+    if not locations:
+        return None
+
+    overall_percent = round((total_energized / total_households * 100.0) if total_households > 0 else 0, 2)
+
+    return {
+        "sheet": f"Energization (%) + {target_month_name} {target_year}",
+        "locations": locations,
+        "location_count": len(locations),
+        "total_households": int(round(total_households)),
+        "total_energized_households": int(round(total_energized)),
+        "overall_percent": overall_percent,
+        "source": "dashboard_metrics",
+        "year": target_year,
+        "month": target_month,
+        "month_label": target_month_name,
+    }
+
+
 def extract_energization_map_from_xl(xl):
     sheet, df, header_row_idx, municipality_col, households_col, energized_col = find_energization_data_table(xl)
     if not sheet:
@@ -1758,11 +2053,14 @@ def extract_energization_map_from_xl(xl):
         if municipality.lower().startswith("grand total"):
             break
 
-        households_raw = df.iat[row_idx, households_col] if households_col < df.shape[1] else None
+        # households_col may be None if only energized HH column exists (old projected potential removed)
+        households_raw = None
+        if households_col is not None and households_col < df.shape[1]:
+            households_raw = df.iat[row_idx, households_col]
         energized_raw = df.iat[row_idx, energized_col] if energized_col < df.shape[1] else None
         households = parse_numeric_cell(households_raw)
         energized = parse_numeric_cell(energized_raw)
-        if households is None and energized is None:
+        if energized is None:
             continue
 
         normalized = normalize_map_location_name(municipality)
@@ -1778,9 +2076,14 @@ def extract_energization_map_from_xl(xl):
             "households": 0.0,
             "energized_households": 0.0
         })
+        # When households_col is None, the energized value IS the household count and also represents energized HHs
         if households is not None:
             bucket["households"] += households
-        if energized is not None:
+            bucket["energized_households"] += energized
+        else:
+            # No separate households column - treat energized as the actual energized HH count
+            # In this case we need to use energized value for both households and energized (will show as 100%)
+            bucket["households"] += energized
             bucket["energized_households"] += energized
 
     locations = []
@@ -1824,6 +2127,270 @@ def extract_energization_map_from_xl(xl):
         "total_households": int(round(total_households)),
         "total_energized_households": int(round(total_energized)),
         "overall_percent": round(overall_percent, 2) if overall_percent is not None else None
+    }, None
+
+
+def extract_energized_hh_metric(xl):
+    """Extract energized households data from the 'Energization (HH)' sheet.
+    
+    The parser also accepts the alias 'Energized (HH)' for compatibility.
+    
+    Sheet format (wide layout with years as row 0, months as row 1, sub-headers as row 2):
+    |        | Col1          | Col2          | Col3            | Col4          | ...
+    | Row 0  | 2023          | 2023          | 2023            | 2023          | ...
+    | Row 1  | Municipality  | January       | January         | January       | ...
+    | Row 2  | Municipality  | Projected HH  | Energized HH    | Unenergized HH| ...
+    | Row 3+ | Bacacay       | 16386         | 12677           | 3709          | ...
+    
+    Each month has 3 sub-columns: Projected HH, Energized HH, Unenergized HH.
+    This function extracts only the "Energized HH" sub-column (the 3rd column in each month block).
+    
+    Returns payload with per-municipality per-year per-month energized HH counts.
+    """
+    sheet_name = find_energization_hh_sheet(xl.sheet_names)
+    if not sheet_name:
+        return None, None
+
+    try:
+        df = xl.parse(sheet_name, header=None)
+    except Exception as exc:
+        return None, f"Error processing sheet '{sheet_name}': {exc}"
+
+    if len(df) < 4:
+        return None, f"Sheet '{sheet_name}' has insufficient rows."
+
+    months = ["January", "February", "March", "April", "May", "June",
+              "July", "August", "September", "October", "November", "December"]
+    month_index = {m.lower(): i for i, m in enumerate(months)}
+
+    # Row 0: year labels (repeated 36 times per year: 12 months x 3 sub-columns)
+    years_row = df.iloc[0].tolist()
+    # Row 1: month labels (each repeated 3 times: Projected HH, Energized HH, Unenergized HH)
+    months_row = df.iloc[1].tolist()
+    # Row 2: sub-headers (Municipality, Projected HH, Energized HH, Unenergized HH, ...)
+    # Row 3+: data rows
+
+    # Build year segment boundaries
+    year_boundaries = []
+    current_year = None
+    for col_idx in range(len(years_row)):
+        raw = years_row[col_idx]
+        if pd.notna(raw):
+            try:
+                yr = int(float(str(raw).strip().replace("'", "")))
+                if yr != current_year:
+                    current_year = yr
+                    year_boundaries.append((yr, col_idx))
+            except (ValueError, TypeError):
+                pass
+
+    if not year_boundaries:
+        return None, f"No year labels found in sheet '{sheet_name}'."
+
+    # Append sentinel end column
+    year_boundaries.append((None, len(years_row)))
+
+    data_rows = []
+    # Data starts at row 3 (after sub-headers)
+    for row_idx in range(3, len(df)):
+        raw_name = df.iloc[row_idx, 0]
+        if pd.isna(raw_name):
+            continue
+        municipality = str(raw_name).strip()
+        if not municipality or municipality == "`":
+            continue
+        if municipality.lower().startswith("grand total"):
+            break
+
+        # For each year segment, collect monthly values
+        for seg_idx in range(len(year_boundaries) - 1):
+            yr, start_col = year_boundaries[seg_idx]
+            end_col = year_boundaries[seg_idx + 1][1]
+
+            monthly_data = {}
+            households_data = {}
+            unenergized_data = {}
+            # Each month occupies 3 columns: Projected HH, Energized HH, Unenergized HH.
+            col = start_col
+            while col + 2 < end_col:
+                if col >= len(df.columns):
+                    break
+                # Read the month name from row 1 at this column position
+                raw_month = months_row[col] if col < len(months_row) else None
+                if pd.isna(raw_month):
+                    col += 3
+                    continue
+                month_text = str(raw_month).strip()
+                mi = month_index.get(month_text.lower())
+                if mi is None:
+                    col += 3
+                    continue
+
+                projected_col = col
+                energized_col = col + 1
+                unenergized_col = col + 2
+
+                projected_val = None
+                energized_val = None
+                unenergized_val = None
+
+                if projected_col < min(end_col, df.shape[1]):
+                    val = df.iloc[row_idx, projected_col]
+                    if pd.notna(val):
+                        try:
+                            projected_val = round(float(val), 2)
+                        except (ValueError, TypeError):
+                            projected_val = None
+                if energized_col < min(end_col, df.shape[1]):
+                    val = df.iloc[row_idx, energized_col]
+                    if pd.notna(val):
+                        try:
+                            energized_val = round(float(val), 2)
+                        except (ValueError, TypeError):
+                            energized_val = None
+                if unenergized_col < min(end_col, df.shape[1]):
+                    val = df.iloc[row_idx, unenergized_col]
+                    if pd.notna(val):
+                        try:
+                            unenergized_val = round(float(val), 2)
+                        except (ValueError, TypeError):
+                            unenergized_val = None
+
+                monthly_data[month_text] = energized_val
+                households_data[month_text] = projected_val
+                unenergized_data[month_text] = unenergized_val
+
+                col += 3  # Move to next month block
+
+            if not any(v is not None for v in monthly_data.values()):
+                continue
+
+            data_rows.append({
+                "year": yr,
+                "municipality": municipality,
+                "label": municipality,
+                "data": monthly_data,
+                "households_data": households_data,
+                "unenergized_data": unenergized_data
+            })
+
+    if not data_rows:
+        return None, f"No municipality data found in sheet '{sheet_name}'."
+
+    return {
+        "sheet_name": sheet_name,
+        "data": data_rows,
+        "row_count": len(data_rows)
+    }, None
+
+
+def extract_energization_percent_metric(xl):
+    """Extract energization percentage data from the 'Energization (%)' sheet.
+    
+    Sheet format (wide layout with years as row 0, months as row 1):
+    |        | Col1      | Col2       | Col3    | ... | Col13      | Col14      | ...
+    | Row 0  | 2023      | 2023       | 2023    | ... | 2024       | 2024       | ...
+    | Row 1  | Municipality | January | February | ... | December | January   | ...
+    | Row 2+ | Bacacay   | 0.7736     | 0.7736  | ... | 0.7918     | 0.7930     | ...
+    
+    Returns payload with per-municipality per-year per-month percentages.
+    """
+    sheet_name = "Energization (%)"
+    if sheet_name not in xl.sheet_names:
+        return None, None
+
+    try:
+        df = xl.parse(sheet_name, header=None)
+    except Exception as exc:
+        return None, f"Error processing sheet '{sheet_name}': {exc}"
+
+    if len(df) < 3:
+        return None, f"Sheet '{sheet_name}' has insufficient rows."
+
+    months = ["January", "February", "March", "April", "May", "June",
+              "July", "August", "September", "October", "November", "December"]
+    month_index = {m.lower(): i for i, m in enumerate(months)}
+
+    # Row 0: year labels
+    years_row = df.iloc[0].tolist()
+    # Row 1: month labels
+    months_row = df.iloc[1].tolist()
+
+    # Build year segment boundaries
+    year_boundaries = []
+    current_year = None
+    for col_idx in range(len(years_row)):
+        raw = years_row[col_idx]
+        if pd.notna(raw):
+            try:
+                yr = int(float(str(raw).strip().replace("'", "")))
+                if yr != current_year:
+                    current_year = yr
+                    year_boundaries.append((yr, col_idx))
+            except (ValueError, TypeError):
+                pass
+
+    if not year_boundaries:
+        return None, f"No year labels found in sheet '{sheet_name}'."
+
+    # Append sentinel end column
+    year_boundaries.append((None, len(years_row)))
+
+    data_rows = []
+    for row_idx in range(2, len(df)):
+        raw_name = df.iloc[row_idx, 0]
+        if pd.isna(raw_name):
+            continue
+        municipality = str(raw_name).strip()
+        if not municipality or municipality == "`":
+            continue
+        if municipality.lower().startswith("grand total"):
+            break
+
+        # For each year segment, collect monthly values
+        for seg_idx in range(len(year_boundaries) - 1):
+            yr, start_col = year_boundaries[seg_idx]
+            end_col = year_boundaries[seg_idx + 1][1]
+
+            monthly_data = {}
+            # Month columns
+            for col in range(start_col, end_col):
+                if col >= len(df.columns):
+                    break
+                raw_month = months_row[col] if col < len(months_row) else None
+                if pd.isna(raw_month):
+                    continue
+                month_text = str(raw_month).strip()
+                mi = month_index.get(month_text.lower())
+                if mi is None:
+                    continue
+
+                val = df.iloc[row_idx, col] if col < df.shape[1] else None
+                pct = None
+                if pd.notna(val):
+                    try:
+                        pct = round(float(val), 6)
+                    except (ValueError, TypeError):
+                        pass
+                monthly_data[month_text] = pct
+
+            if not any(v is not None for v in monthly_data.values()):
+                continue
+
+            data_rows.append({
+                "year": yr,
+                "municipality": municipality,
+                "label": municipality,
+                "data": monthly_data
+            })
+
+    if not data_rows:
+        return None, f"No municipality data found in sheet '{sheet_name}'."
+
+    return {
+        "sheet_name": sheet_name,
+        "data": data_rows,
+        "row_count": len(data_rows)
     }, None
 
 
@@ -1904,6 +2471,18 @@ def extract_dashboard_metrics_from_xl(xl):
             return None, power_rate_error
         if power_rate_payload:
             metrics["power_rate"] = power_rate_payload
+
+        energization_payload, energization_error = extract_energization_percent_metric(xl)
+        if energization_error:
+            return None, energization_error
+        if energization_payload:
+            metrics["energization"] = energization_payload
+
+        energized_hh_payload, energized_hh_error = extract_energized_hh_metric(xl)
+        if energized_hh_error:
+            return None, energized_hh_error
+        if energized_hh_payload:
+            metrics["energization_hh"] = energized_hh_payload
 
         if not metrics:
             return None, "No recognized sheets found in the Excel file."
@@ -2927,6 +3506,9 @@ def build_upload_months(entries, category=None):
             continue
         item = dict(entry)
         item["display_name"] = os.path.splitext(item.get("original_name", ""))[0] or item.get("stored_name", "")
+        year, month = get_entry_year_month(item)
+        item["year"] = year
+        item["month"] = month
         enriched.append(item)
 
     month_map = {}
@@ -2934,10 +3516,6 @@ def build_upload_months(entries, category=None):
     for item in enriched:
         year = item.get("year")
         month = item.get("month")
-        if not year or not month:
-            parsed_year, parsed_month = parse_year_month(item.get("original_name", ""))
-            year = year or parsed_year
-            month = month or parsed_month
         if year and month:
             key = (year, month)
             existing = month_map.get(key)
@@ -2969,25 +3547,43 @@ def build_upload_months(entries, category=None):
 
 
 def get_entry_year_month(entry):
+    if get_entry_category(entry) == "dashboard_metrics":
+        data = get_entry_data(entry)
+        metrics = data.get("dashboard_metrics") or {}
+        latest = get_latest_period_from_dashboard_metrics(metrics, ("energization", "energization_hh"))
+        if latest:
+            return latest
+
     parsed_year, parsed_month = parse_year_month(entry.get("original_name", ""))
     year = parsed_year or entry.get("year")
     month = parsed_month or entry.get("month")
+    if year and month:
+        return year, month
+
     return year, month
 
 
-def get_energization_map_payload(entry):
+def get_energization_map_payload(entry, target_year=None, target_month=None):
     data = get_entry_data(entry)
+    # First check for direct energization_map data
     payload = data.get("energization_map")
-    if not isinstance(payload, dict):
-        return None
-    locations = payload.get("locations")
-    if not isinstance(locations, list) or not locations:
-        return None
-    return payload
+    if isinstance(payload, dict) and payload.get("locations"):
+        return payload
+    
+    # Fallback: check if this is a dashboard_metrics entry with energization data
+    if entry.get("category") == "dashboard_metrics":
+        map_payload = build_energization_map_from_percent_metric_for_period(entry, target_year, target_month)
+        if map_payload:
+            return map_payload
+    
+    return None
 
 
 def build_energization_map_response(entry, payload):
-    year, month = get_entry_year_month(entry)
+    year = payload.get("year") if isinstance(payload, dict) else None
+    month = payload.get("month") if isinstance(payload, dict) else None
+    if not year or not month:
+        year, month = get_energization_period_from_entry(entry)
     response = dict(payload)
     response["upload_id"] = entry.get("id")
     response["label"] = entry.get("original_name", "")
@@ -3002,31 +3598,49 @@ def build_energization_map_options(entries):
     unsorted_items = []
 
     for entry in entries:
-        if not entry_matches_category(entry, "energization"):
-            continue
-        payload = get_energization_map_payload(entry)
-        if not payload:
+        is_dashboard_metrics = entry.get("category") == "dashboard_metrics"
+        if not is_dashboard_metrics and not entry_matches_category(entry, "energization"):
             continue
 
-        year, month = get_entry_year_month(entry)
         uploaded_at = entry.get("uploaded_at", "")
         display_name = os.path.splitext(entry.get("original_name", ""))[0] or entry.get("stored_name", "")
-        month_number = None
-        try:
-            month_number = int(month) if month is not None else None
-        except (TypeError, ValueError):
-            month_number = None
+        if is_dashboard_metrics:
+            data = get_entry_data(entry)
+            metrics = data.get("dashboard_metrics") or {}
+            for year, month in get_dashboard_metric_periods(metrics, ("energization", "energization_hh")):
+                payload = get_energization_map_payload(entry, year, month)
+                if not payload:
+                    continue
+                item = {
+                    "id": f"{entry.get('id')}:{year}:{month}",
+                    "source_upload_id": entry.get("id"),
+                    "display_name": display_name,
+                    "uploaded_at": uploaded_at,
+                    "year": year,
+                    "month": month,
+                    "month_label": get_month_name(month),
+                    "label": format_month_label(year, month) or display_name or "Unknown",
+                    "has_data": True,
+                }
+                key = (int(year), int(month))
+                existing = latest_per_month.get(key)
+                if not existing or uploaded_at > existing.get("uploaded_at", ""):
+                    latest_per_month[key] = item
+            continue
 
+        year, month = get_energization_period_from_entry(entry)
+        payload = get_energization_map_payload(entry, year, month)
         item = {
-            "id": entry.get("id"),
+            "id": str(entry.get("id")),
+            "source_upload_id": entry.get("id"),
             "display_name": display_name,
             "uploaded_at": uploaded_at,
             "year": year,
             "month": month,
-            "month_label": MONTH_NAMES[month_number - 1] if month_number and 1 <= month_number <= 12 else "",
-            "label": format_month_label(year, month) if year and month else (display_name or "Unknown")
+            "month_label": get_month_name(month),
+            "label": format_month_label(year, month) if year and month else (display_name or "Unknown"),
+            "has_data": bool(payload),
         }
-
         if year and month:
             key = (int(year), int(month))
             existing = latest_per_month.get(key)
@@ -3217,12 +3831,15 @@ def normalize_map_location_name(value):
     text = str(value or "").strip().lower()
     if not text:
         return ""
+    # Drop parentheticals (e.g. " (Locsin)", " (Libog)") so they don't
+    # break matching against the SVG region names.
     text = re.sub(r"\([^)]*\)", " ", text)
     text = text.replace("&", " and ")
     text = re.sub(r"\bcity of\b", " ", text)
     text = re.sub(r"\bcity\b", " ", text)
     text = re.sub(r"[^a-z0-9]+", "", text)
     return text
+
 
 
 @lru_cache(maxsize=1)
@@ -4415,10 +5032,7 @@ def build_year_options(entries, category=None):
     for entry in entries:
         if category and not entry_matches_category(entry, category):
             continue
-        entry_year = entry.get("year")
-        if not entry_year:
-            parsed_year, _ = parse_year_month(entry.get("original_name", ""))
-            entry_year = parsed_year
+        entry_year, _ = get_entry_year_month(entry)
         if entry_year:
             years.add(int(entry_year))
     return sorted(years, reverse=True)
@@ -4435,6 +5049,8 @@ def login():
         return redirect(url_for("dashboard"))
 
     error = None
+    email = ""
+    password = ""
     if request.method == "POST":
         email = request.form.get("username", "").strip()
         password = request.form.get("password", "")
@@ -4456,7 +5072,7 @@ def login():
             except Exception as exc:
                 error = format_auth_error(exc)
 
-    return render_template("login.html", error=error)
+    return render_template("login.html", error=error, email=email, password=password)
 
 
 @app.route("/dashboard")
@@ -4529,7 +5145,7 @@ def upload_file():
             return redirect(url_for("dashboard", upload_error="processing") + "#section-uploads")
         upload_id = str(uuid.uuid4())
         uploaded_at = datetime.now().isoformat(timespec="seconds")
-        year, month = parse_year_month(original_name)
+        year, month = infer_upload_period(selected_category, data_json, original_name)
         cached_data = dict(data_json or {})
         cached_data.update({
             "id": upload_id,
@@ -4722,14 +5338,19 @@ def api_energization_map():
     if not get_current_user():
         return jsonify({"error": "Unauthorized"}), 401
 
-    requested_upload_id = str(request.args.get("upload_id", "")).strip()
+    requested_upload_id, requested_year, requested_month = parse_energization_selection_id(request.args.get("upload_id", ""))
     if requested_upload_id:
         entry = fetch_upload(requested_upload_id)
         if not entry:
             return jsonify({"error": "Selected Energization upload was not found."}), 404
-        if not entry_matches_category(entry, "energization"):
+        # Allow both dedicated energization uploads and dashboard_metrics with Energization (%) sheet
+        is_valid = (
+            entry_matches_category(entry, "energization")
+            or entry.get("category") == "dashboard_metrics"
+        )
+        if not is_valid:
             return jsonify({"error": "Selected file is not an Energization upload."}), 400
-        payload = get_energization_map_payload(entry)
+        payload = get_energization_map_payload(entry, requested_year, requested_month)
         if not payload:
             return jsonify({
                 "error": "No cached Energization map data found for the selected upload. Please re-upload the file."
@@ -4814,7 +5435,7 @@ def api_upload():
             return jsonify({"error": data_error}), 400
         upload_id = str(uuid.uuid4())
         uploaded_at = datetime.now().isoformat(timespec="seconds")
-        year, month = parse_year_month(original_name)
+        year, month = infer_upload_period(selected_category, data_json, original_name)
         cached_data = dict(data_json or {})
         cached_data.update({
             "id": upload_id,

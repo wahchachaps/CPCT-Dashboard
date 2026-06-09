@@ -1501,7 +1501,9 @@
         }
 
         function loadEnergizationLocationCatalog() {
-            if (isStaticSite()) return Promise.resolve(false);
+            // Always try to load the catalog from the API. The static site uses
+            // a Netlify proxy that forwards /api/* to the backend, so the call
+            // works in both deployments.
             return fetchJson("/api/energization-locations")
                 .then(function (result) {
                     if (!result.ok) return false;
@@ -1594,9 +1596,9 @@
                 `<p><strong>Type:</strong> ${loc.type}</p>` +
                 `<p><strong>Branch:</strong> Branch ${loc.branch}</p>` +
                 `<p><strong>HH Electrification Level:</strong> ${hhElectrificationLevel}</p>` +
-                `<p><strong>HHS Projected Potential 2024:</strong> ${formatCount(loc.households)}</p>` +
-                `<p><strong>Energized HHS:</strong> ${formatCount(loc.energizedHouseholds)}</p>` +
-                `<p><strong>Unenergized HHS:</strong> ${formatCount(loc.unenergizedHouseholds)}</p>` +
+                `<p><strong>Total Households:</strong> ${formatCount(loc.households)}</p>` +
+                `<p><strong>Energized HH:</strong> ${formatCount(loc.energizedHouseholds)}</p>` +
+                `<p><strong>Unenergized HH:</strong> ${formatCount(loc.unenergizedHouseholds)}</p>` +
                 `<p><strong>Electrification Band:</strong> ${LEVELS[loc.level].label}</p>`;
         }
 
@@ -1605,8 +1607,15 @@
 
             let changed = 0;
             payload.locations.forEach(function (incoming) {
-                const loc = ensureLocationEntry(incoming);
-                if (!loc) return;
+                // Ensure the location entry is created even if the incoming
+                // location doesn't match one of the preconfigured branches.
+                let loc = ensureLocationEntry(incoming);
+                if (!loc) {
+                    // Fall back: try to find by name in any branch
+                    const fallbackBranch = "1";
+                    loc = ensureLocationEntry(Object.assign({}, incoming, { branch: fallbackBranch }));
+                    if (!loc) return;
+                }
 
                 const percent = Number(incoming.electrification_percent);
                 const hhElectrificationLevel = Number(incoming.hh_electrification_level);
@@ -1636,16 +1645,24 @@
                     loc.unenergizedHouseholds = households - energizedHouseholds;
                 } else if (Number.isFinite(unenergizedHouseholdsRaw)) {
                     loc.unenergizedHouseholds = unenergizedHouseholdsRaw;
+                } else if (Number.isFinite(households)) {
+                    // If we have households but no energized count, treat unenergized as 0
+                    loc.unenergizedHouseholds = 0;
+                } else {
+                    loc.unenergizedHouseholds = null;
                 }
 
+                // Always build a useful description; the user wants to see the
+                // data even if household counts are not present.
                 const descriptionParts = [];
                 if (Number.isFinite(Number(loc.hhElectrificationLevel))) {
                     descriptionParts.push(`HH Electrification Level: ${formatPercent(loc.hhElectrificationLevel)}%`);
+                } else if (Number.isFinite(Number(loc.electrificationPercent))) {
+                    descriptionParts.push(`Electrification: ${formatPercent(loc.electrificationPercent)}%`);
                 }
                 if (
-                    Number.isFinite(Number(loc.households)) &&
-                    Number.isFinite(Number(loc.energizedHouseholds)) &&
-                    Number.isFinite(Number(loc.unenergizedHouseholds))
+                    Number.isFinite(Number(loc.households)) ||
+                    Number.isFinite(Number(loc.energizedHouseholds))
                 ) {
                     descriptionParts.push(
                         `HHs: ${formatCount(loc.households)}, Energized: ${formatCount(loc.energizedHouseholds)}, Unenergized: ${formatCount(loc.unenergizedHouseholds)}`
@@ -1654,7 +1671,9 @@
                 if (payload.label) {
                     descriptionParts.push(`Source: ${payload.label}`);
                 }
-                loc.description = descriptionParts.join(" | ") || loc.description;
+                if (descriptionParts.length > 0) {
+                    loc.description = descriptionParts.join(" | ");
+                }
                 changed += 1;
             });
 
@@ -1678,6 +1697,7 @@
             }
             return true;
         }
+
 
         function getYearItems(yearValue) {
             if (!yearValue) {
@@ -1712,13 +1732,19 @@
             yearItems.forEach(function (item) {
                 const option = document.createElement("option");
                 option.value = item.id || "";
-                option.textContent = item.label || item.month_label || item.display_name || "Unknown";
+                option.textContent = item.month_label || item.label || item.display_name || "Unknown";
+                if (item && item.has_data === false) {
+                    option.disabled = true;
+                    option.textContent = `${option.textContent} (No data)`;
+                }
                 energizationMonthSelect.appendChild(option);
             });
 
-            const availableValues = Array.from(energizationMonthSelect.options).map(function (opt) { return opt.value; });
-            const candidate = preferredUploadId || previousValue || (yearItems[0] && yearItems[0].id) || "";
-            energizationMonthSelect.value = availableValues.indexOf(candidate) !== -1 ? candidate : availableValues[0];
+            const availableValues = Array.from(energizationMonthSelect.options)
+                .filter(function (opt) { return !opt.disabled; })
+                .map(function (opt) { return opt.value; });
+            const candidate = preferredUploadId || previousValue || (yearItems.find(function (item) { return item && item.has_data !== false; }) || {}).id || "";
+            energizationMonthSelect.value = availableValues.indexOf(candidate) !== -1 ? candidate : (availableValues[0] || "");
             selectedEnergizationUploadId = energizationMonthSelect.value || "";
             return selectedEnergizationUploadId;
         }
@@ -1772,7 +1798,7 @@
         function loadEnergizationMapByUploadId(uploadId) {
             const selectedId = String(uploadId || "").trim();
             selectedEnergizationUploadId = selectedId;
-            if (!selectedId || isStaticSite()) return Promise.resolve(false);
+            if (!selectedId) return Promise.resolve(false);
 
             return fetchJson(`/api/energization-map?upload_id=${encodeURIComponent(selectedId)}`)
                 .then(function (result) {
@@ -1785,7 +1811,6 @@
         }
 
         function refreshEnergizationMapData(preferredUploadId) {
-            if (isStaticSite()) return Promise.resolve(false);
             return fetchJson("/api/energization-map-options")
                 .then(function (result) {
                     if (!result.ok) return false;
@@ -1798,6 +1823,7 @@
                     return false;
                 });
         }
+
 
         function renderLegend(branchKey) {
             if (!levelLegend) return;
@@ -2320,9 +2346,9 @@
                         : (Number.isFinite(Number(loc.electrificationPercent)) ? `${formatPercent(loc.electrificationPercent)}%` : "N/A");
                     body.innerHTML =
                         `<div><strong>HH Electrification Level:</strong> ${hhElectrificationLevel}</div>` +
-                        `<div><strong>HHS Projected Potential 2024:</strong> ${formatCount(loc.households)}</div>` +
-                        `<div><strong>Energized HHS:</strong> ${formatCount(loc.energizedHouseholds)}</div>` +
-                        `<div><strong>Unenergized HHS:</strong> ${formatCount(loc.unenergizedHouseholds)}</div>`;
+                        `<div><strong>Total Households:</strong> ${formatCount(loc.households)}</div>` +
+                        `<div><strong>Energized HH:</strong> ${formatCount(loc.energizedHouseholds)}</div>` +
+                        `<div><strong>Unenergized HH:</strong> ${formatCount(loc.unenergizedHouseholds)}</div>`;
                 } else {
                     body.textContent = "No description available.";
                 }
@@ -2511,10 +2537,8 @@
 
     function inferUploadCategoryFromName(name) {
         const normalized = normalizeUploadNameForMatch(name);
-        if (matchesEnergizationFilename(name) || normalized.includes("energization")) {
-            return "energization";
-        }
         if (normalized.includes("edd")) {
+
             return "edd";
         }
         if (normalized.includes("dashboard") || normalized.includes("metrics")) {

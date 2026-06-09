@@ -233,7 +233,7 @@
                             <select id="energizationMonthSelect">
                                 <option value="">Loading months...</option>
                             </select>
-                            <p class="upload-help">Map values are based on uploaded Energization files.</p>
+                            <p class="upload-help">Map values are based on the latest Energization (%) and Energization (HH) sheets in Dashboard Metrics uploads.</p>
                         </div>
                     </div>
 
@@ -661,11 +661,8 @@
                                     <div class="upload-error is-visible">
                                         That file is currently open or locked by another process. Close it and try again.
                                     </div>
-                                {% elif upload_error == "energization_name" %}
-                                    <div class="upload-error is-visible">
-                                        Energization filenames must use the format "01-MSE_ALECO_Jan 2026".
-                                    </div>
                                 {% endif %}
+
                                 <label for="uploadCategory">File Type</label>
                                 <select id="uploadCategory" name="uploadCategory">
                                     <option value="dashboard_metrics">Dashboard Metrics</option>
@@ -673,16 +670,17 @@
                                     <option value="hourly_kw">Hourly Loading (kW)</option>
                                     <option value="energy_demand">Energy & Demand</option>
                                     <option value="edd">EDD Report</option>
-                                    <option value="energization">Energization</option>
                                     <option value="other">Other</option>
                                 </select>
+
                                 <label for="uploadFiles">Select data file(s)</label>
                                 <input id="uploadFiles" name="uploadFiles" type="file" accept=".xlsx,.xls,.csv" multiple>
                                 <div class="upload-selected">
                                     <p class="upload-selected-empty" id="uploadSelectedEmpty">No files selected.</p>
                                     <ul class="upload-selected-list" id="uploadSelectedList"></ul>
                                 </div>
-                                <p class="upload-help">Tip: Energization files must use names like "01-MSE_ALECO_Jan 2026". Hourly files can use names like "January 2026 KWH" or "January 2026 KW". Energy & Demand files can use yearly Energy sheets like "2025"; Demand sheets can be added later.</p>
+                                <p class="upload-help">Tip: Hourly files can use names like "January 2026 KWH" or "January 2026 KW". Energy & Demand files can use yearly Energy sheets like "2025"; Demand sheets can be added later. Energization data is now sourced from Dashboard Metrics uploads.</p>
+
                                 <div class="upload-error" id="uploadError" role="alert" aria-live="polite"></div>
                                 <div class="upload-actions">
                                     <button type="submit" class="primary-btn" id="uploadSubmit" disabled>Upload Data</button>
@@ -714,15 +712,15 @@
                                         <option value="all" selected>All types</option>
                                         <option value="dashboard_metrics">Dashboard Metrics</option>
                                         <option value="hourly_kwh">Hourly Loading (kWh)</option>
-                                        <option value="hourly_kw">Hourly Loading (kW)</option>
+                                <option value="hourly_kw">Hourly Loading (kW)</option>
                                         <option value="energy_demand">Energy & Demand</option>
                                         <option value="edd">EDD Report</option>
-                                        <option value="energization">Energization</option>
                                         <option value="other">Other</option>
                                     </select>
+
                                 </div>
                             </div>
-                            <p class="upload-help">Sorted by year and month detected from the filename.</p>
+                            <p class="upload-help">Sorted by year and month detected from the filename or workbook headers.</p>
                             <div id="allUploadsContainer"></div>
                             <p class="upload-empty" id="allUploadsEmpty">No uploads yet.</p>
                         </div>
