@@ -6228,7 +6228,18 @@
             setStatus("");
             updateComparisonChart();
         }
-
+        const comparisonColors = [
+    "#ef4444", // red
+    "#3b82f6", // blue
+    "#22c55e", // green
+    "#f59e0b", // orange
+    "#8b5cf6", // purple
+    "#ec4899", // pink
+    "#06b6d4", // cyan
+    "#84cc16", // lime
+    "#f97316", // dark orange
+    "#14b8a6"  // teal
+];
         function updateComparisonChart() {
             const rows = getRows();
             const selectedYear = comparisonYearSelect.value;
@@ -6262,13 +6273,19 @@
 
             if (compareChart) {
                 compareChart.data.labels = payload.labels.map(toShortMonthLabel);
-                compareChart.data.datasets = (payload.datasets || []).map(function (dataset) {
-                    const styles = createMonthPointStyles(dataset.data || [], selectedMonth, dataset.borderColor, dataset.borderColor);
+                compareChart.data.datasets = (payload.datasets || []).map(function (dataset, index) {
+                    const color = comparisonColors[index % comparisonColors.length];
+                    const styles = createMonthPointStyles(
+                        dataset.data || [],
+                        selectedMonth,
+                        color,
+                        color
+                    );
                     return Object.assign({}, dataset, {
                         pointRadius: styles.radius,
                         pointBackgroundColor: styles.backgroundColor,
-                        backgroundColor: dataset.borderColor,
-                        borderColor: dataset.borderColor
+                        backgroundColor: color,
+                        borderColor: color
                     });
                 });
                 compareChart.options.scales.y = yScale;
@@ -6282,13 +6299,22 @@
                 type: "bar",
                 data: {
                     labels: payload.labels.map(toShortMonthLabel),
-                datasets: (payload.datasets || []).map(function (dataset) {
-                    const styles = createMonthPointStyles(dataset.data || [], selectedMonth, dataset.borderColor, dataset.borderColor);
+                datasets: (payload.datasets || []).map(function (dataset, index) {
+
+                    const color = comparisonColors[index % comparisonColors.length];
+
+                    const styles = createMonthPointStyles(
+                        dataset.data || [],
+                        selectedMonth,
+                        color,
+                        color
+                    );
+
                     return Object.assign({}, dataset, {
                         pointRadius: styles.radius,
                         pointBackgroundColor: styles.backgroundColor,
-                        backgroundColor: dataset.borderColor,
-                        borderColor: dataset.borderColor,
+                        backgroundColor: color,
+                        borderColor: color,
                         borderWidth: 1,
                         borderSkipped: false
                     });
