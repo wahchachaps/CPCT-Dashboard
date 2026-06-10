@@ -4593,6 +4593,8 @@
         let selectedMonth = null;
         let annualRequestToken = 0;
         let monthlyRequestToken = 0;
+        const annualPayloadCache = new Map();
+        const monthlyPayloadCache = new Map();
         const monthNames = [
             "January", "February", "March", "April", "May", "June",
             "July", "August", "September", "October", "November", "December"
@@ -4780,12 +4782,19 @@
                 return;
             }
             selectedMonth = monthIndex;
+            const peak = normalizePeak(peakSelect.value);
+            const cacheKey = `${yearValue}|${monthIndex}|${peak}`;
+            if (monthlyPayloadCache.has(cacheKey)) {
+                const cachedPayload = monthlyPayloadCache.get(cacheKey);
+                setMonthlyStatus("");
+                updateMonthlyChart(cachedPayload);
+                return;
+            }
             if (monthlyCard) {
                 monthlyCard.hidden = true;
                 monthlyCard.classList.add("is-hidden");
             }
             setMonthlyStatus("Loading monthly data...");
-            const peak = normalizePeak(peakSelect.value);
             const requestToken = ++monthlyRequestToken;
             fetchJsonWithRetry(`/api/edd-hourly-kw-month-series/${yearValue}/${monthIndex}?peak=${encodeURIComponent(peak)}`, null, {
                 retries: 2,
@@ -4819,6 +4828,7 @@
                         return;
                     }
                     setMonthlyStatus("");
+                    monthlyPayloadCache.set(cacheKey, payload);
                     updateMonthlyChart(payload);
                 })
                 .catch(function () {
@@ -4938,7 +4948,16 @@
                 return;
             }
             setStatus("");
+            resetMonthly();
             const peak = normalizePeak(peakSelect.value);
+            const cacheKey = `${year}|${peak}`;
+            if (annualPayloadCache.has(cacheKey)) {
+                const cachedPayload = annualPayloadCache.get(cacheKey);
+                if (cachedPayload && cachedPayload.labels && cachedPayload.labels.length) {
+                    updateChart(cachedPayload);
+                    return;
+                }
+            }
             const requestToken = ++annualRequestToken;
             fetchJsonWithRetry(`/api/edd-hourly-kw-annual/${year}?peak=${encodeURIComponent(peak)}`, null, {
                 retries: 2,
@@ -4974,6 +4993,7 @@
                         return;
                     }
                     setStatus("");
+                    annualPayloadCache.set(cacheKey, payload);
                     updateChart(payload);
                 })
                 .catch(function () {
@@ -5070,6 +5090,7 @@
         let lineChart = null;
         let compareBarChart = null;
         let comparePercentChart = null;
+        const systemLossYearCache = new Map();
 
         function setStatus(message) {
             if (!status) return;
@@ -5102,6 +5123,20 @@
             if (map[lower]) return map[lower];
             if (lower.length >= 3) return lower.slice(0, 3).toUpperCase();
             return text.toUpperCase();
+        }
+
+        function clearComparisonCharts() {
+            if (compareBarChart) {
+                compareBarChart.destroy();
+                compareBarChart = null;
+            }
+            if (comparePercentChart) {
+                comparePercentChart.destroy();
+                comparePercentChart = null;
+            }
+            if (compareRow) {
+                compareRow.hidden = true;
+            }
         }
 
         function updateCharts(payload, comparePayload) {
@@ -5220,6 +5255,14 @@
             const hasCompare = !!(comparePayload && comparePayload.labels && comparePayload.labels.length);
             compareRow.hidden = !hasCompare;
             if (!hasCompare) {
+                if (compareBarChart) {
+                    compareBarChart.destroy();
+                    compareBarChart = null;
+                }
+                if (comparePercentChart) {
+                    comparePercentChart.destroy();
+                    comparePercentChart = null;
+                }
                 return;
             }
 
@@ -5317,50 +5360,76 @@
                 return;
             }
             setStatus("");
-            fetchJson(`/api/edd-system-loss-year/${year}`)
-                .then(function (result) {
-                    const payload = result.payload || {};
-                    if (!result.ok) {
-                        setStatus(payload.error || "Unable to load chart data.");
-                        return;
-                    }
-                    if (!payload || !payload.labels || payload.labels.length === 0) {
-                        setStatus("No System Loss data found for that year.");
-                        return;
-                    }
-
-                    updateCharts(payload, null);
-                })
-                .catch(function () {
-                    setStatus("Unable to load chart data.");
-                });
-        }
-
-        function loadComparisonData(year, compareYear) {
-            if (compareRow) {
-                compareRow.hidden = true;
-            }
-            if (!year || !compareYear || compareYear === year) {
+            const cachedPayload = systemLossYearCache.get(String(year));
+            if (cachedPayload && cachedPayload.labels && cachedPayload.labels.length) {
+                updateCharts(cachedPayload, null);
+                loadComparisonData(comparisonYearSelect.value, compareYearSelect.value);
                 return;
             }
             fetchJson(`/api/edd-system-loss-year/${year}`)
                 .then(function (result) {
                     const payload = result.payload || {};
-                    if (!result.ok || !payload || !payload.labels || payload.labels.length === 0) {
-                        setStatus(payload.error || `No data found for comparison year ${year}.`);
-                        return null;
+                    if (!result.ok) {
+                        setStatus(payload.error || "Unable to load chart data.");
+                        clearComparisonCharts();
+                        return;
                     }
-                    return fetchJson(`/api/edd-system-loss-year/${compareYear}`)
-                        .then(function (compareResult) {
-                            const comparePayload = compareResult.payload || {};
-                            if (compareResult.ok && comparePayload && comparePayload.labels && comparePayload.labels.length) {
-                                updateCompareCharts(payload, comparePayload);
-                            } else {
-                                setStatus(`No data found for compare year ${compareYear}.`);
-                            }
-                        });
+                    if (!payload || !payload.labels || payload.labels.length === 0) {
+                        setStatus("No System Loss data found for that year.");
+                        clearComparisonCharts();
+                        return;
+                    }
+
+                    systemLossYearCache.set(String(year), payload);
+                    updateCharts(payload, null);
+                    loadComparisonData(comparisonYearSelect.value, compareYearSelect.value);
                 })
                 .catch(function () {
+                    setStatus("Unable to load chart data.");
+                    clearComparisonCharts();
+                });
+        }
+
+        function loadComparisonData(year, compareYear) {
+            if (!year || !compareYear || compareYear === year) {
+                clearComparisonCharts();
+                return;
+            }
+            function loadYearPayload(targetYear) {
+                const cacheKey = String(targetYear);
+                const cached = systemLossYearCache.get(cacheKey);
+                if (cached && cached.labels && cached.labels.length) {
+                    return Promise.resolve(cached);
+                }
+                return fetchJson(`/api/edd-system-loss-year/${targetYear}`)
+                    .then(function (result) {
+                        const payload = result.payload || {};
+                        if (!result.ok || !payload || !payload.labels || payload.labels.length === 0) {
+                            return null;
+                        }
+                        systemLossYearCache.set(cacheKey, payload);
+                        return payload;
+                    });
+            }
+
+            Promise.all([loadYearPayload(year), loadYearPayload(compareYear)])
+                .then(function (results) {
+                    const payload = results[0];
+                    const comparePayload = results[1];
+                    if (!payload || !payload.labels || !payload.labels.length) {
+                        clearComparisonCharts();
+                        setStatus(`No data found for comparison year ${year}.`);
+                        return;
+                    }
+                    if (!comparePayload || !comparePayload.labels || !comparePayload.labels.length) {
+                        clearComparisonCharts();
+                        setStatus(`No data found for compare year ${compareYear}.`);
+                        return;
+                    }
+                    updateCompareCharts(payload, comparePayload);
+                })
+                .catch(function () {
+                    clearComparisonCharts();
                     setStatus("Unable to load comparison chart data.");
                 });
         }
