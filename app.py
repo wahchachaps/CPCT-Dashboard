@@ -7,6 +7,7 @@ from datetime import datetime, time
 from functools import lru_cache
 from io import BytesIO
 from urllib.parse import quote
+from types import SimpleNamespace
 
 import pandas as pd
 import requests
@@ -71,6 +72,10 @@ KW_DEL_REUPLOAD_MESSAGE = (
 )
 ENERGIZATION_FILENAME_MESSAGE = (
     'Energization filenames must use the format "01-MSE_ALECO_Jan 2026".'
+)
+UPLOAD_DUPLICATE_NAME_MESSAGE = (
+    "A file with the same name already exists. "
+    "Please rename it or delete the old upload first."
 )
 SYSTEM_LOSS_VALUE_ROW = 44
 SYSTEM_LOSS_PERCENT_ROW = 54
@@ -151,6 +156,15 @@ ENERGIZATION_MAP_LOCATIONS = [
 ]
 
 _supabase_client = None
+VERSIONED_UPLOAD_CATEGORIES = {
+    "dashboard_metrics",
+    "energization",
+    "edd",
+    "hourly",
+    "hourly_kwh",
+    "hourly_kw",
+    "energy_demand",
+}
 
 
 def supabase_enabled():
@@ -377,18 +391,8 @@ def delete_upload_entry(upload_id):
                 f"{filter_column}=eq.{encoded_value}",
                 prefer="return=representation",
             )
-            if response.status_code < 200 or response.status_code >= 300:
+            if response.status_code not in (200, 201, 202, 204, 404):
                 return False, format_supabase_http_error(response, "delete")
-
-            response = supabase_uploads_rest(
-                "GET",
-                f"select=id&{filter_column}=eq.{encoded_value}&limit=1",
-            )
-            if response.status_code < 200 or response.status_code >= 300:
-                return False, format_supabase_http_error(response, "verify deleted")
-            data = read_rest_json(response)
-            if data:
-                return False, "Unable to delete upload from database."
         except requests.RequestException as exc:
             return False, f"Unable to delete upload from database: {exc}"
 
@@ -408,6 +412,14 @@ def delete_upload_entry(upload_id):
 def get_current_user():
     if not supabase_enabled():
         return None
+    cached_user_id = str(session.get("user_id") or "").strip()
+    cached_email = str(session.get("user_email") or "").strip()
+    if cached_user_id or cached_email:
+        return SimpleNamespace(
+            id=cached_user_id or None,
+            email=cached_email or None,
+        )
+
     session_token = session.get("access_token")
     header_token = get_request_token()
     token = session_token or header_token
@@ -422,19 +434,29 @@ def get_current_user():
             return response.get("user")
         return None
 
+    def cache_user(user):
+        user_id = getattr(user, "id", None) or (user.get("id") if isinstance(user, dict) else None)
+        user_email = getattr(user, "email", None) or (user.get("email") if isinstance(user, dict) else None)
+        if user_id:
+            session["user_id"] = str(user_id)
+        if user_email:
+            session["user_email"] = str(user_email)
+        return user
+
     if session_token:
         try:
             user = lookup_user(session_token)
             if user:
-                return user
+                return cache_user(user)
         except Exception:
-            session.pop("access_token", None)
-            session.pop("refresh_token", None)
-            session_token = None
+            pass
 
     if header_token and header_token != session_token:
         try:
-            return lookup_user(header_token)
+            user = lookup_user(header_token)
+            if user:
+                return cache_user(user)
+            return None
         except Exception:
             return None
 
@@ -503,6 +525,35 @@ def validate_upload_filename(filename, category):
     if category == "energization" and not is_energization_filename(filename):
         return ENERGIZATION_FILENAME_MESSAGE
     return None
+
+
+def normalize_upload_name_for_match(filename):
+    return normalize_filename_for_matching(filename)
+
+
+def find_upload_name_conflict(entries, filename):
+    candidate = str(filename or "").strip()
+    if not candidate:
+        return None
+
+    candidate_lower = candidate.lower()
+    candidate_key = normalize_upload_name_for_match(candidate)
+    for entry in entries or []:
+        original_name = str(entry.get("original_name") or "").strip()
+        if original_name:
+            if original_name.lower() == candidate_lower:
+                return original_name
+            if normalize_upload_name_for_match(original_name) == candidate_key:
+                return original_name
+
+    return None
+
+
+def build_duplicate_upload_message(filename):
+    name = str(filename or "").strip()
+    if not name:
+        return UPLOAD_DUPLICATE_NAME_MESSAGE
+    return f'A file named "{name}" already exists. Please rename it or delete the old upload first.'
 
 
 def read_upload_payload(file_storage):
@@ -722,6 +773,32 @@ def parse_iso_date(value):
         return datetime.fromisoformat(value).date()
     except ValueError:
         return None
+
+
+def _upload_dedupe_key(entry):
+    category = get_entry_category(entry)
+    year, month = get_entry_year_month(entry)
+    if category in VERSIONED_UPLOAD_CATEGORIES and year and month:
+        return (category, int(year), int(month))
+
+    stored_name = str(entry.get("stored_name") or "").strip()
+    if stored_name:
+        return ("stored_name", stored_name)
+
+    return ("id", str(entry.get("id") or entry.get("original_name") or ""))
+
+
+def dedupe_upload_entries(entries):
+    deduped = []
+    seen = set()
+    ordered = sorted(entries or [], key=lambda item: item.get("uploaded_at", ""), reverse=True)
+    for entry in ordered:
+        key = _upload_dedupe_key(entry)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(entry)
+    return deduped
 
 
 def build_upload_groups(entries):
@@ -3233,6 +3310,50 @@ def extract_demand_energy_hourly_from_xl(xl):
     }, None
 
 
+def merge_hourly_payload_collection(payloads, include_sum=False):
+    merged_days = {}
+    merged_periods = {}
+    source_sheets = []
+
+    for payload in payloads or []:
+        if not isinstance(payload, dict):
+            continue
+
+        for day, values in (payload.get("days") or {}).items():
+            if day not in merged_days:
+                merged_days[day] = values
+
+        for period_key, period_value in (payload.get("periods") or {}).items():
+            if period_key not in merged_periods:
+                merged_periods[period_key] = period_value
+
+        payload_sources = payload.get("source_sheets")
+        if isinstance(payload_sources, list):
+            source_sheets.extend([str(item) for item in payload_sources if str(item).strip()])
+        elif payload_sources:
+            source_sheets.append(str(payload_sources))
+
+        payload_source = payload.get("source_sheet")
+        if payload_source:
+            source_sheets.append(str(payload_source))
+
+    if not merged_days:
+        return None
+
+    result = {
+        "days": merged_days,
+        "periods": merged_periods,
+        "month_max": compute_hourly_max(merged_days),
+        "month_avg": compute_hourly_avg(merged_days)
+    }
+    if include_sum:
+        result["month_sum"] = compute_hourly_sum(merged_days)
+    if source_sheets:
+        # Preserve source sheet names for diagnostics while keeping them unique.
+        result["source_sheets"] = list(dict.fromkeys(source_sheets))
+    return result
+
+
 def parse_dashboard_metric_year(period):
     text = str(period or "").strip()
     if not text:
@@ -3417,38 +3538,49 @@ def precompute_upload_data(file_bytes, filename, category):
         }, None
     if category == "energy_demand":
         labels = build_hour_labels()
-        energy_payload, energy_error = extract_energy_hourly_from_xl(xl)
-        if energy_error and not filename_mentions_demand_only(filename):
-            yearly_energy_payload, yearly_energy_error = extract_yearly_energy_hourly_from_xl(xl)
-            if yearly_energy_payload:
-                energy_payload = yearly_energy_payload
-                energy_error = None
-            else:
-                energy_error = yearly_energy_error or energy_error
-        demand_payload, demand_error = extract_demand_hourly_from_xl(xl)
-        if demand_error and not filename_mentions_energy_only(filename):
-            yearly_demand_payload, yearly_demand_error = extract_yearly_demand_hourly_from_xl(xl)
-            if yearly_demand_payload:
-                demand_payload = yearly_demand_payload
-                demand_error = None
-            else:
-                demand_error = yearly_demand_error or demand_error
-        
-        if energy_error and demand_error:
-            return None, f"Energy: {energy_error} | Demand: {demand_error}"
-        
-        cp_payload = energy_payload if energy_payload else {}
-        kw_payload = demand_payload if demand_payload else {}
-        
-        if not energy_payload and not demand_payload:
+        energy_candidates = []
+        energy_errors = []
+        combined_payload, combined_error = extract_demand_energy_hourly_from_xl(xl)
+        if combined_payload:
+            combined_cp = combined_payload.get("cp") or {}
+            if combined_cp:
+                energy_candidates.append(combined_cp)
+        elif combined_error:
+            energy_errors.append(combined_error)
+        for extractor in (extract_energy_hourly_from_xl, extract_yearly_energy_hourly_from_xl):
+            payload, error = extractor(xl)
+            if payload:
+                energy_candidates.append(payload)
+            elif error:
+                energy_errors.append(error)
+
+        demand_candidates = []
+        demand_errors = []
+        if combined_payload:
+            combined_kw = combined_payload.get("kw") or {}
+            if combined_kw:
+                demand_candidates.append(combined_kw)
+        for extractor in (extract_demand_hourly_from_xl, extract_yearly_demand_hourly_from_xl):
+            payload, error = extractor(xl)
+            if payload:
+                demand_candidates.append(payload)
+            elif error:
+                demand_errors.append(error)
+
+        cp_payload = merge_hourly_payload_collection(energy_candidates, include_sum=True) or {}
+        kw_payload = merge_hourly_payload_collection(demand_candidates) or {}
+
+        if not cp_payload and not kw_payload:
+            energy_error = energy_errors[0] if energy_errors else "No usable Energy hourly data found."
+            demand_error = demand_errors[0] if demand_errors else "No usable Demand hourly data found."
             return None, "No usable Energy or Demand data found."
 
         energy_source = None
         if cp_payload:
-            energy_source = find_energy_sheet(xl.sheet_names) or (cp_payload or {}).get("source_sheets") or find_yearly_hourly_sheet(xl)
+            energy_source = (cp_payload or {}).get("source_sheets") or find_energy_sheet(xl.sheet_names) or find_yearly_hourly_sheets(xl)
         demand_source = None
         if kw_payload:
-            demand_source = find_demand_sheet(xl.sheet_names) or (kw_payload or {}).get("source_sheets") or find_yearly_hourly_sheet(xl)
+            demand_source = (kw_payload or {}).get("source_sheets") or find_demand_sheet(xl.sheet_names) or find_yearly_hourly_sheets(xl)
         
         return {
             "hourly": {
@@ -3546,6 +3678,50 @@ def build_upload_months(entries, category=None):
     return month_items
 
 
+def purge_all_uploads():
+    entries = load_manifest(include_data=True)
+    removed = 0
+    errors = []
+    seen_targets = set()
+
+    for entry in entries:
+        target = str(entry.get("id") or entry.get("stored_name") or "").strip()
+        if not target or target in seen_targets:
+            continue
+        seen_targets.add(target)
+        ok, error = delete_upload_entry(target)
+        if ok:
+            removed += 1
+        elif error:
+            errors.append(error)
+
+    return removed, errors
+
+
+def get_latest_period_from_hourly_payload(payload):
+    if not isinstance(payload, dict):
+        return None
+
+    periods = payload.get("periods") or {}
+    candidates = []
+    for period in periods.values():
+        if not isinstance(period, dict):
+            continue
+        year = period.get("year")
+        month = period.get("month")
+        try:
+            year = int(year)
+            month = int(month)
+        except (TypeError, ValueError):
+            continue
+        if 1900 <= year <= 2099 and 1 <= month <= 12:
+            candidates.append((year, month))
+
+    if not candidates:
+        return None
+    return max(candidates)
+
+
 def get_entry_year_month(entry):
     if get_entry_category(entry) == "dashboard_metrics":
         data = get_entry_data(entry)
@@ -3554,6 +3730,36 @@ def get_entry_year_month(entry):
         if latest:
             return latest
 
+    if get_entry_category(entry) == "energy_demand":
+        data = get_entry_data(entry)
+        hourly = data.get("hourly") or {}
+        latest = get_latest_period_from_hourly_payload(hourly.get("cp") or {})
+        if not latest:
+            latest = get_latest_period_from_hourly_payload(hourly.get("kw") or {})
+        if latest:
+            return latest
+
+        sheet_candidates = []
+        source_sheets = hourly.get("source_sheets") or {}
+        if isinstance(source_sheets, dict):
+            for key in ("energy", "demand"):
+                value = source_sheets.get(key)
+                if isinstance(value, list):
+                    sheet_candidates.extend(value)
+                elif value:
+                    sheet_candidates.append(value)
+        elif isinstance(source_sheets, list):
+            sheet_candidates.extend(source_sheets)
+
+        source_sheet = hourly.get("source_sheet")
+        if source_sheet:
+            sheet_candidates.append(source_sheet)
+
+        for sheet_name in sheet_candidates:
+            parsed_year = extract_year_from_text(sheet_name)
+            if parsed_year:
+                return parsed_year, 1
+
     parsed_year, parsed_month = parse_year_month(entry.get("original_name", ""))
     year = parsed_year or entry.get("year")
     month = parsed_month or entry.get("month")
@@ -3561,6 +3767,52 @@ def get_entry_year_month(entry):
         return year, month
 
     return year, month
+
+
+def get_entry_years(entry):
+    years = set()
+
+    data = get_entry_data(entry)
+    hourly = data.get("hourly") or {}
+
+    for payload in (hourly.get("cp") or {}, hourly.get("kw") or {}):
+        periods = payload.get("periods") or {}
+        for period in periods.values():
+            if not isinstance(period, dict):
+                continue
+            try:
+                year = int(period.get("year"))
+            except (TypeError, ValueError):
+                continue
+            if 1900 <= year <= 2099:
+                years.add(year)
+
+    source_candidates = []
+    source_sheet = hourly.get("source_sheet")
+    if source_sheet:
+        source_candidates.append(source_sheet)
+
+    source_sheets = hourly.get("source_sheets") or {}
+    if isinstance(source_sheets, dict):
+        for key in ("energy", "demand"):
+            value = source_sheets.get(key)
+            if isinstance(value, list):
+                source_candidates.extend(value)
+            elif value:
+                source_candidates.append(value)
+    elif isinstance(source_sheets, list):
+        source_candidates.extend(source_sheets)
+
+    for candidate in source_candidates:
+        parsed_year = extract_year_from_text(candidate)
+        if parsed_year:
+            years.add(parsed_year)
+
+    entry_year, _ = get_entry_year_month(entry)
+    if entry_year:
+        years.add(int(entry_year))
+
+    return years
 
 
 def get_energization_map_payload(entry, target_year=None, target_month=None):
@@ -5032,9 +5284,9 @@ def build_year_options(entries, category=None):
     for entry in entries:
         if category and not entry_matches_category(entry, category):
             continue
-        entry_year, _ = get_entry_year_month(entry)
-        if entry_year:
-            years.add(int(entry_year))
+        entry_years = get_entry_years(entry)
+        if entry_years:
+            years.update(entry_years)
     return sorted(years, reverse=True)
 
 
@@ -5110,12 +5362,14 @@ def upload_file():
             return jsonify({"error": "No files uploaded."}), 400
         return redirect(url_for("dashboard") + "#section-uploads")
 
-    selected_category = request.form.get("uploadCategory", "other").strip().lower()
+    selected_category = request.form.get("uploadCategory", "dashboard_metrics").strip().lower()
     if selected_category not in CATEGORY_OPTIONS:
-        selected_category = "other"
+        selected_category = "dashboard_metrics"
 
+    existing_entries = load_manifest()
     added = 0
     seen_names = set()
+    seen_name_keys = set()
     for file in files:
         if not file or not file.filename:
             continue
@@ -5133,6 +5387,21 @@ def upload_file():
             if wants_json_response():
                 return jsonify({"error": filename_error}), 400
             return redirect(url_for("dashboard", upload_error="energization_name") + "#section-uploads")
+
+        normalized_name = normalize_upload_name_for_match(original_name)
+        if normalized_name in seen_name_keys:
+            duplicate_message = build_duplicate_upload_message(original_name)
+            if wants_json_response():
+                return jsonify({"error": duplicate_message}), 400
+            return redirect(url_for("dashboard", upload_error="duplicate") + "#section-uploads")
+
+        conflicting_name = find_upload_name_conflict(existing_entries, original_name)
+        if conflicting_name:
+            duplicate_message = build_duplicate_upload_message(conflicting_name)
+            if wants_json_response():
+                return jsonify({"error": duplicate_message}), 400
+            return redirect(url_for("dashboard", upload_error="duplicate") + "#section-uploads")
+        seen_name_keys.add(normalized_name)
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         unique_id = uuid.uuid4().hex[:8]
@@ -5233,7 +5502,9 @@ def delete_upload_api(upload_id):
             return jsonify({"error": error or "Unable to delete upload."}), 500
         return redirect(url_for("dashboard", upload_error="delete") + "#section-uploads")
     if wants_json_response():
-        return jsonify({"ok": True})
+        payload = build_bootstrap_payload()
+        payload["ok"] = True
+        return jsonify(payload)
     return redirect(url_for("dashboard") + "#section-uploads")
 
 
@@ -5404,12 +5675,14 @@ def api_upload():
     if not files:
         return jsonify({"error": "No files uploaded."}), 400
 
-    selected_category = request.form.get("uploadCategory", "other").strip().lower()
+    selected_category = request.form.get("uploadCategory", "dashboard_metrics").strip().lower()
     if selected_category not in CATEGORY_OPTIONS:
-        selected_category = "other"
+        selected_category = "dashboard_metrics"
 
+    existing_entries = load_manifest()
     added = 0
     seen_names = set()
+    seen_name_keys = set()
     for file in files:
         if not file or not file.filename:
             continue
@@ -5425,6 +5698,15 @@ def api_upload():
         filename_error = validate_upload_filename(original_name, selected_category)
         if filename_error:
             return jsonify({"error": filename_error}), 400
+
+        normalized_name = normalize_upload_name_for_match(original_name)
+        if normalized_name in seen_name_keys:
+            return jsonify({"error": build_duplicate_upload_message(original_name)}), 400
+
+        conflicting_name = find_upload_name_conflict(existing_entries, original_name)
+        if conflicting_name:
+            return jsonify({"error": build_duplicate_upload_message(conflicting_name)}), 400
+        seen_name_keys.add(normalized_name)
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         unique_id = uuid.uuid4().hex[:8]
@@ -5492,6 +5774,19 @@ def api_delete_upload(upload_id):
         return jsonify({"error": error or "Unable to delete upload."}), 500
 
     payload = build_bootstrap_payload()
+    return jsonify(payload)
+
+
+@app.route("/api/uploads/purge", methods=["POST"])
+def api_purge_uploads():
+    if not get_current_user():
+        return jsonify({"error": "Unauthorized"}), 401
+
+    removed, errors = purge_all_uploads()
+    payload = build_bootstrap_payload()
+    payload["removed"] = removed
+    if errors:
+        payload["warnings"] = errors[:10]
     return jsonify(payload)
 
 

@@ -254,8 +254,14 @@
                     <div class="graph-card hourly-day-card">
                         <div class="uploaded-data-head">
                             <div>
-                                <h3>Hourly Loading (kWh)</h3>
-                                <p class="upload-help"></p>
+                                <h3>Energy (kWh)</h3>
+                                <p class="upload-help">Filter by year to switch between uploaded workbook sheets automatically.</p>
+                            </div>
+                            <div class="upload-filter">
+                                <label for="hourlyYearSelect">Year</label>
+                                <select id="hourlyYearSelect">
+                                    <option value="">Loading years...</option>
+                                </select>
                             </div>
                             <div class="upload-filter">
                                 <label for="hourlyMonthSelect">Month</label>
@@ -274,8 +280,14 @@
                     <div class="graph-card hourly-day-card">
                         <div class="uploaded-data-head">
                             <div>
-                                <h3>Hourly Loading (kW)</h3>
-                                <p class="upload-help"></p>
+                                <h3>Demand (kW)</h3>
+                                <p class="upload-help">Filter by year to switch between uploaded workbook sheets automatically.</p>
+                            </div>
+                            <div class="upload-filter">
+                                <label for="hourlyKwYearSelect">Year</label>
+                                <select id="hourlyKwYearSelect">
+                                    <option value="">Loading years...</option>
+                                </select>
                             </div>
                             <div class="upload-filter">
                                 <label for="hourlyKwMonthSelect">Month</label>
@@ -363,7 +375,7 @@
                     <div class="graph-card peak-load-card" id="monthlyKwCard" hidden>
                         <div class="uploaded-data-head">
                             <div>
-                                <h3 id="monthlyKwTitle">Monthly Hourly Loading (kW)</h3>
+                                <h3 id="monthlyKwTitle">Monthly Demand (kW)</h3>
                                 <p class="upload-help"></p>
                             </div>
                         </div>
@@ -665,12 +677,8 @@
 
                                 <label for="uploadCategory">File Type</label>
                                 <select id="uploadCategory" name="uploadCategory">
-                                    <option value="dashboard_metrics">Dashboard Metrics</option>
-                                    <option value="hourly_kwh">Hourly Loading (kWh)</option>
-                                    <option value="hourly_kw">Hourly Loading (kW)</option>
+                                    <option value="dashboard_metrics" selected>Dashboard Metrics</option>
                                     <option value="energy_demand">Energy & Demand</option>
-                                    <option value="edd">EDD Report</option>
-                                    <option value="other">Other</option>
                                 </select>
 
                                 <label for="uploadFiles">Select data file(s)</label>
@@ -679,7 +687,7 @@
                                     <p class="upload-selected-empty" id="uploadSelectedEmpty">No files selected.</p>
                                     <ul class="upload-selected-list" id="uploadSelectedList"></ul>
                                 </div>
-                                <p class="upload-help">Tip: Hourly files can use names like "January 2026 KWH" or "January 2026 KW". Energy & Demand files can use yearly Energy sheets like "2025"; Demand sheets can be added later. Energization data is now sourced from Dashboard Metrics uploads.</p>
+                                <p class="upload-help">Tip: Energy &amp; Demand files can include multiple year sheets such as "2025" and "2026" in the same workbook. Energization data is now sourced from Dashboard Metrics uploads.</p>
 
                                 <div class="upload-error" id="uploadError" role="alert" aria-live="polite"></div>
                                 <div class="upload-actions">
@@ -711,13 +719,8 @@
                                     <select id="uploadTypeFilter">
                                         <option value="all" selected>All types</option>
                                         <option value="dashboard_metrics">Dashboard Metrics</option>
-                                        <option value="hourly_kwh">Hourly Loading (kWh)</option>
-                                <option value="hourly_kw">Hourly Loading (kW)</option>
                                         <option value="energy_demand">Energy & Demand</option>
-                                        <option value="edd">EDD Report</option>
-                                        <option value="other">Other</option>
                                     </select>
-
                                 </div>
                             </div>
                             <p class="upload-help">Sorted by year and month detected from the filename or workbook headers.</p>

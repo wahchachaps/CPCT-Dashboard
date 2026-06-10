@@ -232,9 +232,11 @@
 
     function fetchJson(url, options) {
         const settings = Object.assign({}, options || {});
+        const handleUnauthorized = settings.handleUnauthorized !== false;
+        delete settings.handleUnauthorized;
         settings.headers = Object.assign({ Accept: "application/json" }, settings.headers || {});
         return apiFetch(url, settings).then(function (response) {
-            if (response.status === 401) {
+            if (response.status === 401 && handleUnauthorized) {
                 clearStoredTokens();
                 const loginPath = getLoginPath();
                 if (!window.location.pathname.endsWith(loginPath)) {
@@ -2677,7 +2679,12 @@
         allOption.textContent = "All years";
         filter.appendChild(allOption);
 
+        const seenYears = new Set();
         (groups || []).forEach(function (group) {
+            if (group.year === "Unsorted" || seenYears.has(String(group.year))) {
+                return;
+            }
+            seenYears.add(String(group.year));
             const option = document.createElement("option");
             option.value = String(group.year);
             option.textContent = String(group.year);
@@ -2716,10 +2723,16 @@
         }
 
         select.disabled = false;
+        const seenYears = new Set();
         years.forEach(function (year) {
+            const yearValue = String(year);
+            if (seenYears.has(yearValue)) {
+                return;
+            }
+            seenYears.add(yearValue);
             const option = document.createElement("option");
-            option.value = String(year);
-            option.textContent = String(year);
+            option.value = yearValue;
+            option.textContent = yearValue;
             select.appendChild(option);
         });
 
@@ -3037,7 +3050,7 @@
                 node.classList.add("is-removing");
             });
         }
-        fetchJson(`/delete/${uploadId}`, { method: "POST" }).then(function (result) {
+        fetchJson(`/api/upload/delete/${uploadId}`, { method: "POST", handleUnauthorized: false }).then(function (result) {
             if (!result.ok) {
                 if (sourceButton) {
                     sourceButton.disabled = false;
@@ -3049,11 +3062,20 @@
                         node.classList.remove("is-removing");
                     });
                 }
-                setUploadError(result.payload.error || "Unable to delete upload.");
+                if (result.status === 401) {
+                    setUploadError("Your session expired. Please log in again.");
+                    clearStoredTokens();
+                } else {
+                    setUploadError(result.payload.error || "Unable to delete upload.");
+                }
                 return;
             }
             window.setTimeout(function () {
-                renderBootstrap(result.payload || {}, { refreshDashboardMetrics: false });
+                if (result.payload && (result.payload.upload_groups || result.payload.recent_uploads || result.payload.fact_sheet)) {
+                    renderBootstrap(result.payload, { refreshDashboardMetrics: false });
+                } else {
+                    loadBootstrap();
+                }
                 if (typeof window.refreshHourlyDayChartMonths === "function") {
                     window.refreshHourlyDayChartMonths();
                 }
@@ -3228,10 +3250,16 @@
             const formData = new FormData(uploadForm);
             fetchJson("/upload", {
                 method: "POST",
+                handleUnauthorized: false,
                 body: formData
             }).then(function (result) {
                 if (!result.ok) {
-                    setUploadError(result.payload.error || "Unable to upload files.");
+                    if (result.status === 401) {
+                        setUploadError("Your session expired. Please log in again.");
+                        clearStoredTokens();
+                    } else {
+                        setUploadError(result.payload.error || "Unable to upload files.");
+                    }
                     if (submitButton) {
                         submitButton.disabled = false;
                     }
@@ -3631,11 +3659,12 @@
     }
 
     function initHourlyDayChart() {
+        const yearSelect = document.getElementById("hourlyYearSelect");
         const monthSelect = document.getElementById("hourlyMonthSelect");
         const daySelect = document.getElementById("hourlyDaySelect");
         const canvas = document.getElementById("hourlyDayChart");
         const status = document.getElementById("hourlyDayStatus");
-        if (!monthSelect || !daySelect || !canvas || !window.Chart) return;
+        if (!yearSelect || !monthSelect || !daySelect || !canvas || !window.Chart) return;
 
         let chart = null;
         let monthItems = [];
@@ -3768,10 +3797,59 @@
             };
         }
 
+        function getAvailableYears() {
+            const years = [];
+            monthItems.forEach(function (item) {
+                const year = Number(item && item.year);
+                if (!Number.isFinite(year)) return;
+                if (years.indexOf(year) === -1) {
+                    years.push(year);
+                }
+            });
+            return years.sort(function (a, b) { return b - a; });
+        }
+
+        function populateYearOptions() {
+            const previous = yearSelect.value || "";
+            const years = getAvailableYears();
+            yearSelect.innerHTML = "";
+            if (!years.length) {
+                const option = document.createElement("option");
+                option.value = "";
+                option.textContent = "No years available";
+                yearSelect.appendChild(option);
+                yearSelect.disabled = true;
+                return false;
+            }
+
+            years.forEach(function (year) {
+                const option = document.createElement("option");
+                option.value = String(year);
+                option.textContent = String(year);
+                yearSelect.appendChild(option);
+            });
+            yearSelect.disabled = false;
+
+            const available = Array.from(yearSelect.options).map(function (option) { return option.value; });
+            yearSelect.value = available.indexOf(previous) !== -1 ? previous : String(years[0]);
+            return true;
+        }
+
+        function getFilteredMonthItems() {
+            const selectedYear = String(yearSelect.value || "").trim();
+            if (!selectedYear) {
+                return monthItems.slice();
+            }
+            return monthItems.filter(function (item) {
+                return String(item && item.year) === selectedYear;
+            });
+        }
+
         function loadDay(monthValue, day) {
             const parsed = parseMonthValue(monthValue);
             if (!parsed || !day) {
                 setStatus("Select a month and day (or All days) to view data.");
+                renderChartEmpty();
                 return;
             }
             setStatus("");
@@ -3828,11 +3906,20 @@
                 });
         }
 
+        function renderChartEmpty() {
+            if (chart) {
+                chart.data.labels = [];
+                chart.data.datasets[0].data = [];
+                chart.update();
+            }
+        }
+
         function loadDays(monthValue) {
             const parsed = parseMonthValue(monthValue);
             if (!parsed) {
-                setStatus("Upload a file to view this chart.");
+                setStatus(yearSelect.value ? "No months found for the selected year." : "Upload a file to view this chart.");
                 populateDays([]);
+                renderChartEmpty();
                 return;
             }
             setStatus("");
@@ -3892,6 +3979,42 @@
                 });
         }
 
+        function loadMonthsForSelectedYear() {
+            const filteredItems = getFilteredMonthItems().slice().sort(function (a, b) {
+                return String(a.start).localeCompare(String(b.start));
+            });
+            const previous = monthSelect.value || "";
+            monthSelect.innerHTML = "";
+
+            if (!filteredItems.length) {
+                const option = document.createElement("option");
+                option.value = "";
+                option.textContent = yearSelect.value ? "No months for selected year" : "No months available";
+                monthSelect.appendChild(option);
+                monthSelect.disabled = true;
+                populateDays([]);
+                renderChartEmpty();
+                setStatus(yearSelect.value ? "No Energy data found for the selected year." : "Upload a file to view this chart.");
+                return;
+            }
+
+            monthSelect.disabled = false;
+            filteredItems.forEach(function (item) {
+                const option = document.createElement("option");
+                option.value = `${item.id}|${item.start}|${item.end}`;
+                option.textContent = item.label || item.start || "";
+                monthSelect.appendChild(option);
+            });
+
+            const available = Array.from(monthSelect.options).map(function (option) { return option.value; });
+            monthSelect.value = available.indexOf(previous) !== -1 ? previous : monthSelect.options[0].value;
+            loadDays(monthSelect.value);
+        }
+
+        yearSelect.addEventListener("change", function () {
+            loadMonthsForSelectedYear();
+        });
+
         monthSelect.addEventListener("change", function () {
             loadDays(monthSelect.value);
         });
@@ -3900,34 +4023,18 @@
             loadDay(monthSelect.value, daySelect.value);
         });
 
-        function populateMonthOptions() {
-            monthSelect.innerHTML = "";
-            if (monthItems.length === 0) {
-                const option = document.createElement("option");
-                option.value = "";
-                option.textContent = "No months available";
-                monthSelect.appendChild(option);
-                monthSelect.disabled = true;
-                populateDays([]);
-                return;
-            }
-            monthSelect.disabled = false;
-            monthItems.sort(function (a, b) { return String(a.start).localeCompare(String(b.start)); });
-            monthItems.forEach(function (item) {
-                const option = document.createElement("option");
-                option.value = `${item.id}|${item.start}|${item.end}`;
-                option.textContent = item.label || item.start || "";
-                monthSelect.appendChild(option);
-            });
-            loadDays(monthSelect.value);
-        }
-
         function populateMonths() {
             monthSelect.innerHTML = "";
             const loading = document.createElement("option");
             loading.value = "";
             loading.textContent = "Loading months...";
             monthSelect.appendChild(loading);
+            yearSelect.innerHTML = "";
+            const loadingYear = document.createElement("option");
+            loadingYear.value = "";
+            loadingYear.textContent = "Loading years...";
+            yearSelect.appendChild(loadingYear);
+            yearSelect.disabled = true;
 
             fetchJson("/api/edd-hourly-months")
                 .then(function (result) {
@@ -3938,7 +4045,14 @@
                         option.value = "";
                         option.textContent = "Unable to load months";
                         monthSelect.appendChild(option);
+                        yearSelect.innerHTML = "";
+                        const yearOption = document.createElement("option");
+                        yearOption.value = "";
+                        yearOption.textContent = "Unable to load years";
+                        yearSelect.appendChild(yearOption);
+                        yearSelect.disabled = true;
                         populateDays([]);
+                        renderChartEmpty();
                         return;
                     }
                     const items = payload.items || [];
@@ -3957,9 +4071,12 @@
                         yearSelect.disabled = true;
                         monthSelect.disabled = true;
                         populateDays([]);
+                        renderChartEmpty();
                         return;
                     }
-                    populateMonthOptions();
+                    if (populateYearOptions()) {
+                        loadMonthsForSelectedYear();
+                    }
                 })
                 .catch(function () {
                     monthSelect.innerHTML = "";
@@ -3967,7 +4084,14 @@
                     option.value = "";
                     option.textContent = "Unable to load months";
                     monthSelect.appendChild(option);
+                    yearSelect.innerHTML = "";
+                    const yearOption = document.createElement("option");
+                    yearOption.value = "";
+                    yearOption.textContent = "Unable to load years";
+                    yearSelect.appendChild(yearOption);
+                    yearSelect.disabled = true;
                     populateDays([]);
+                    renderChartEmpty();
                 });
         }
 
@@ -3976,12 +4100,13 @@
     }
 
     function initHourlyDayKwChart() {
+        const yearSelect = document.getElementById("hourlyKwYearSelect");
         const monthSelect = document.getElementById("hourlyKwMonthSelect");
         const daySelect = document.getElementById("hourlyKwDaySelect");
         const canvas = document.getElementById("hourlyKwChart");
         const status = document.getElementById("hourlyKwStatus");
         const tableBody = document.getElementById("hourlyKwTableBody");
-        if (!monthSelect || !daySelect || !canvas || !window.Chart) return;
+        if (!yearSelect || !monthSelect || !daySelect || !canvas || !window.Chart) return;
 
         let chart = null;
         let monthItems = [];
@@ -4092,6 +4217,15 @@
             }));
         }
 
+        function renderChartEmpty() {
+            renderTable([], []);
+            if (chart) {
+                chart.data.labels = [];
+                chart.data.datasets[0].data = [];
+                chart.update();
+            }
+        }
+
         function formatDayLabel(value) {
             const text = String(value || "");
             const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
@@ -4137,11 +4271,59 @@
             };
         }
 
+        function getAvailableYears() {
+            const years = [];
+            monthItems.forEach(function (item) {
+                const year = Number(item && item.year);
+                if (!Number.isFinite(year)) return;
+                if (years.indexOf(year) === -1) {
+                    years.push(year);
+                }
+            });
+            return years.sort(function (a, b) { return b - a; });
+        }
+
+        function populateYearOptions() {
+            const previous = yearSelect.value || "";
+            const years = getAvailableYears();
+            yearSelect.innerHTML = "";
+            if (!years.length) {
+                const option = document.createElement("option");
+                option.value = "";
+                option.textContent = "No years available";
+                yearSelect.appendChild(option);
+                yearSelect.disabled = true;
+                return false;
+            }
+
+            years.forEach(function (year) {
+                const option = document.createElement("option");
+                option.value = String(year);
+                option.textContent = String(year);
+                yearSelect.appendChild(option);
+            });
+            yearSelect.disabled = false;
+
+            const available = Array.from(yearSelect.options).map(function (option) { return option.value; });
+            yearSelect.value = available.indexOf(previous) !== -1 ? previous : String(years[0]);
+            return true;
+        }
+
+        function getFilteredMonthItems() {
+            const selectedYear = String(yearSelect.value || "").trim();
+            if (!selectedYear) {
+                return monthItems.slice();
+            }
+            return monthItems.filter(function (item) {
+                return String(item && item.year) === selectedYear;
+            });
+        }
+
         function loadDay(monthValue, day) {
             const parsed = parseMonthValue(monthValue);
             if (!parsed || !day) {
                 setStatus("Select a month and day (or All days) to view data.");
-                renderTable([], []);
+                renderChartEmpty();
                 return;
             }
             setStatus("");
@@ -4178,17 +4360,17 @@
                     const payload = result.payload || {};
                     if (!result.ok) {
                         setStatus(payload.error || "Unable to load chart data.");
-                        renderTable([], []);
+                        renderChartEmpty();
                         return;
                     }
                     if (payload.error) {
                         setStatus(payload.error);
-                        renderTable([], []);
+                        renderChartEmpty();
                         return;
                     }
                     if (!payload.labels || payload.labels.length === 0) {
                         setStatus("No usable data found.");
-                        renderTable([], []);
+                        renderChartEmpty();
                         return;
                     }
                     setStatus("");
@@ -4198,16 +4380,16 @@
                 .catch(function () {
                     if (requestToken !== dayRequestToken) return;
                     setStatus("Unable to load chart data.");
-                    renderTable([], []);
+                    renderChartEmpty();
                 });
         }
 
         function loadDays(monthValue) {
             const parsed = parseMonthValue(monthValue);
             if (!parsed) {
-                setStatus("Upload a file to view this chart.");
+                setStatus(yearSelect.value ? "No months found for the selected year." : "Upload a file to view this chart.");
                 populateDays([]);
-                renderTable([], []);
+                renderChartEmpty();
                 return;
             }
             setStatus("");
@@ -4267,6 +4449,42 @@
                 });
         }
 
+        function loadMonthsForSelectedYear() {
+            const filteredItems = getFilteredMonthItems().slice().sort(function (a, b) {
+                return String(a.start).localeCompare(String(b.start));
+            });
+            const previous = monthSelect.value || "";
+            monthSelect.innerHTML = "";
+
+            if (!filteredItems.length) {
+                const option = document.createElement("option");
+                option.value = "";
+                option.textContent = yearSelect.value ? "No months for selected year" : "No months available";
+                monthSelect.appendChild(option);
+                monthSelect.disabled = true;
+                populateDays([]);
+                renderChartEmpty();
+                setStatus(yearSelect.value ? "No kW data found for the selected year." : "Upload a file to view this chart.");
+                return;
+            }
+
+            monthSelect.disabled = false;
+            filteredItems.forEach(function (item) {
+                const option = document.createElement("option");
+                option.value = `${item.id}|${item.start}|${item.end}`;
+                option.textContent = item.label || item.start || "";
+                monthSelect.appendChild(option);
+            });
+
+            const available = Array.from(monthSelect.options).map(function (option) { return option.value; });
+            monthSelect.value = available.indexOf(previous) !== -1 ? previous : monthSelect.options[0].value;
+            loadDays(monthSelect.value);
+        }
+
+        yearSelect.addEventListener("change", function () {
+            loadMonthsForSelectedYear();
+        });
+
         monthSelect.addEventListener("change", function () {
             loadDays(monthSelect.value);
         });
@@ -4275,34 +4493,18 @@
             loadDay(monthSelect.value, daySelect.value);
         });
 
-        function populateMonthOptions() {
-            monthSelect.innerHTML = "";
-            if (monthItems.length === 0) {
-                const option = document.createElement("option");
-                option.value = "";
-                option.textContent = "No months available";
-                monthSelect.appendChild(option);
-                monthSelect.disabled = true;
-                populateDays([]);
-                return;
-            }
-            monthSelect.disabled = false;
-            monthItems.sort(function (a, b) { return String(a.start).localeCompare(String(b.start)); });
-            monthItems.forEach(function (item) {
-                const option = document.createElement("option");
-                option.value = `${item.id}|${item.start}|${item.end}`;
-                option.textContent = item.label || item.start || "";
-                monthSelect.appendChild(option);
-            });
-            loadDays(monthSelect.value);
-        }
-
         function populateMonths() {
             monthSelect.innerHTML = "";
             const loading = document.createElement("option");
             loading.value = "";
             loading.textContent = "Loading months...";
             monthSelect.appendChild(loading);
+            yearSelect.innerHTML = "";
+            const loadingYear = document.createElement("option");
+            loadingYear.value = "";
+            loadingYear.textContent = "Loading years...";
+            yearSelect.appendChild(loadingYear);
+            yearSelect.disabled = true;
 
             fetchJson("/api/edd-hourly-kw-months")
                 .then(function (result) {
@@ -4313,7 +4515,14 @@
                         option.value = "";
                         option.textContent = "Unable to load months";
                         monthSelect.appendChild(option);
+                        yearSelect.innerHTML = "";
+                        const yearOption = document.createElement("option");
+                        yearOption.value = "";
+                        yearOption.textContent = "Unable to load years";
+                        yearSelect.appendChild(yearOption);
+                        yearSelect.disabled = true;
                         populateDays([]);
+                        renderChartEmpty();
                         return;
                     }
                     const items = payload.items || [];
@@ -4324,11 +4533,20 @@
                         option.value = "";
                         option.textContent = "No uploads yet";
                         monthSelect.appendChild(option);
+                        yearSelect.innerHTML = "";
+                        const yearOption = document.createElement("option");
+                        yearOption.value = "";
+                        yearOption.textContent = "No years available";
+                        yearSelect.appendChild(yearOption);
+                        yearSelect.disabled = true;
                         monthSelect.disabled = true;
                         populateDays([]);
+                        renderChartEmpty();
                         return;
                     }
-                    populateMonthOptions();
+                    if (populateYearOptions()) {
+                        loadMonthsForSelectedYear();
+                    }
                 })
                 .catch(function () {
                     monthSelect.innerHTML = "";
@@ -4336,7 +4554,14 @@
                     option.value = "";
                     option.textContent = "Unable to load months";
                     monthSelect.appendChild(option);
+                    yearSelect.innerHTML = "";
+                    const yearOption = document.createElement("option");
+                    yearOption.value = "";
+                    yearOption.textContent = "Unable to load years";
+                    yearSelect.appendChild(yearOption);
+                    yearSelect.disabled = true;
                     populateDays([]);
+                    renderChartEmpty();
                 });
         }
 
@@ -4496,7 +4721,7 @@
                 const peakLabelText = normalizePeak(payload.peak) === "lowest" ? "Lowest Peak" : "Highest Peak";
                 const dayText = formatDayLabel(payload.day || "");
                 const daySuffix = dayText ? ` (${dayText})` : "";
-                monthlyTitle.textContent = `Monthly Hourly Loading (kW) - ${payload.label}${daySuffix} ${payload.year} (${peakLabelText})`;
+                monthlyTitle.textContent = `Monthly Demand (kW) - ${payload.label}${daySuffix} ${payload.year} (${peakLabelText})`;
             }
             if (monthlyCard) {
                 monthlyCard.hidden = false;
@@ -4606,7 +4831,7 @@
         function resetMonthly() {
             selectedMonth = null;
             if (monthlyTitle) {
-                monthlyTitle.textContent = "Monthly Hourly Loading (kW)";
+                monthlyTitle.textContent = "Monthly Demand (kW)";
             }
             setMonthlyStatus("Click a month in the Annual System Demand chart to load data.");
             renderMonthlyTable([], []);
