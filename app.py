@@ -1192,7 +1192,8 @@ def build_hourly_month_items_from_periods(entry, periods):
             "month": month,
             "start": format_date_ymd(start_date),
             "end": format_date_ymd(end_date),
-            "label": period.get("label") or format_billing_label(start_date, end_date)
+            "label": period.get("label") or format_billing_label(start_date, end_date),
+            "uploaded_at": entry.get("uploaded_at", "")
         })
     return items
 
@@ -1259,9 +1260,31 @@ def build_full_hourly_month_items(entry, hourly_payload, periods):
                 "month": month,
                 "start": format_date_ymd(start_date),
                 "end": format_date_ymd(end_date),
-                "label": format_billing_label(start_date, end_date)
+                "label": format_billing_label(start_date, end_date),
+                "uploaded_at": entry.get("uploaded_at", "")
             })
     return items
+
+
+def dedupe_hourly_month_items(items):
+    deduped = {}
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            year = int(item.get("year"))
+            month = int(item.get("month"))
+        except (TypeError, ValueError):
+            continue
+        if year < 1900 or year > 2099 or month < 1 or month > 12:
+            continue
+        key = (year, month)
+        existing = deduped.get(key)
+        uploaded_at = str(item.get("uploaded_at") or "")
+        if existing is None or uploaded_at > str(existing.get("uploaded_at") or ""):
+            deduped[key] = item
+
+    return list(deduped.values())
 
 
 def compute_cp_day_hour_sums(xl):
@@ -6080,8 +6103,9 @@ def edd_hourly_months():
                 "start": format_date_ymd(start_date),
                 "end": format_date_ymd(end_date),
                 "label": format_billing_label(start_date, end_date)
-            })
+                })
 
+    items = dedupe_hourly_month_items(items)
     items.sort(key=lambda item: (item.get("year", 0), item.get("month", 0), item.get("start", "")))
 
     return jsonify({"items": items})
@@ -6123,8 +6147,9 @@ def edd_hourly_kw_months():
                 "start": format_date_ymd(start_date),
                 "end": format_date_ymd(end_date),
                 "label": format_billing_label(start_date, end_date)
-            })
+                })
 
+    items = dedupe_hourly_month_items(items)
     items.sort(key=lambda item: (item.get("year", 0), item.get("month", 0), item.get("start", "")))
 
     return jsonify({"items": items})
